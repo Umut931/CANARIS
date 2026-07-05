@@ -1,0 +1,20 @@
+# Forcer LF sur tout ce qui s'exécute sous Linux (les CRLF cassent bash/eBPF headers)
+*.sh    text eol=lf
+*.c     text eol=lf
+*.h     text eol=lf
+*.py    text eol=lf
+Makefile text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+
+# Fichiers Windows : laisser CRLF
+*.sln   text eol=crlf
+*.vcxproj text eol=crlf
+*.inf   text eol=crlf
+
+# Binaires
+*.o     binary
+*.sys   binary
+*.pdf   binary
+*.docx  binary
+*.xlsx  binary

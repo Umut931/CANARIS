@@ -1,0 +1,52 @@
+# ---- eBPF / Linux build artifacts ----
+*.o
+*.bpf.o
+*.skel.h
+linux/canaris
+linux/userspace/canaris.skel.h
+vmlinux.h
+
+# ---- Windows / WDK build artifacts ----
+[Dd]ebug/
+[Rr]elease/
+x64/
+*.obj
+*.pdb
+*.ilk
+*.sys
+*.cat
+*.exe
+*.lib
+*.exp
+*.suo
+*.user
+*.aps
+.vs/
+BuildLog.htm
+
+# ---- Test sandbox & runtime data (never commit) ----
+tests/sandbox/*
+!tests/sandbox/.gitkeep
+snapshots/*
+!snapshots/.gitkeep
+*.canaris.log
+canaris_events.log
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# ---- Editor / OS ----
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Generated canary manifests (regenerable) ----
+canary_manifest.json
