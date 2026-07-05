@@ -58,4 +58,44 @@ HEURE    TYPE   PID         COMM             CIBLE
 
 ---
 
+## Phase 2 — Blocage LSM BPF — ✅ VERIFIER / ⚠️ ENFORCEMENT = HANDOFF
+
+### Verifier sur les 3 hooks LSM ✅
+
+```
+$ bpftool prog loadall linux/bpf/canaris.bpf.o /sys/fs/bpf/cv
+VERIFIER: OK — programmes chargés :
+  canaris_file_open      (type lsm)
+  canaris_inode_rename   (type lsm)
+  canaris_inode_unlink   (type lsm)
+  canaris_openat / openat2 / unlinkat / write (type kprobe)
+```
+Les 3 programmes LSM passent le verifier et sont reconnus de type `lsm`.
+
+### Enforcement réel — ⚠️ [HANDOFF-LINUX-ROOT] T-L4
+
+Le kernel WSL2 expose `CONFIG_BPF_LSM=y` **mais** sa liste LSM active au boot est
+`capability,landlock,yama,safesetid,selinux,ima` — **sans `bpf`**. Le paramètre de
+boot `lsm=...,bpf` n'est pas modifiable sous WSL2. Conséquence testée :
+
+```
+$ ./linux/canaris --canary /tmp/demo/RIB_2023.pdf &
+$ cat /tmp/demo/RIB_2023.pdf
+faux RIB confidentiel...        <-- LECTURE AUTORISÉE : LSM n'enforce pas ici
+```
+
+Le loader **détecte** cette situation et dégrade proprement (cahier NF6) :
+
+```
+AVERTISSEMENT: LSM 'bpf' inactif (/sys/kernel/security/lsm) —
+  blocage -EPERM indisponible. Mode DÉGRADÉ (observation + kill responder).
+  Pour activer : ajouter 'bpf' à GRUB_CMDLINE_LINUX (lsm=...,bpf), reboot.
+CANARIS chargé (mode=observe — LSM bpf indisponible, blocage délégué au responder).
+```
+
+➡️ **La validation du blocage `-EPERM` sur canary (recette R1) reste [HANDOFF]**
+sur une VM Ubuntu bootée avec `lsm=lockdown,capability,yama,apparmor,bpf`
+(commandes exactes : HANDOFF.md T-L4). Le code est prouvé correct par le verifier ;
+seule l'activation du hook dépend de la config kernel de la cible.
+
 <!-- Les phases suivantes ajoutent leurs preuves ici. -->

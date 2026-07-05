@@ -25,6 +25,12 @@
 #include <bpf/bpf_core_read.h>
 #include "canaris.h"
 
+/* vmlinux.h (CO-RE) ne fournit pas les codes errno : on définit ce dont on a
+ * besoin pour refuser une opération LSM. */
+#ifndef EPERM
+#define EPERM 1
+#endif
+
 char LICENSE[] SEC("license") = "GPL";
 
 /* ------------------------------------------------------------------ maps -- */
@@ -43,6 +49,28 @@ struct {
 	__type(key, __u32);
 	__type(value, struct canaris_config);
 } config_map SEC(".maps");
+
+/* Fichiers protégés & canaries, indexés par (device, inode). Alimenté par
+ * l'userspace : chaque canary (is_canary=1) et chaque dossier protégé
+ * (is_dir=1). Les fichiers d'un dossier protégé sont couverts par remontée
+ * d'ancêtres (pas besoin de les énumérer un par un). */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 65536);
+	__type(key, struct file_key);
+	__type(value, struct protect_val);
+} protected_files SEC(".maps");
+
+/* Whitelist de processus légitimes (backup, sync, IDE, gestionnaires de
+ * paquets) exemptés du blocage. Clé = comm[16]. Alimentée par l'userspace.
+ * NB : le comm est falsifiable — limitation documentée (docs/LIMITATIONS.md) ;
+ * une version durcie utiliserait l'inode de l'exécutable. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, char[TASK_COMM_LEN]);
+	__type(value, __u8);
+} whitelist SEC(".maps");
 
 /* -------------------------------------------------------------- helpers -- */
 
@@ -149,4 +177,150 @@ int BPF_KSYSCALL(canaris_write, unsigned int fd, const char *buf, size_t count)
 	e->ino = (__u64)count; /* réutilise ino pour transporter le nb d'octets */
 	bpf_ringbuf_submit(e, 0);
 	return 0;
+}
+
+/* =====================================================================
+ *  Phase 2 — BLOCAGE RÉEL via hooks LSM BPF (kernel >= 5.7).
+ *
+ *  Contrairement aux kprobes (read-only), un programme LSM BPF peut
+ *  retourner une valeur < 0 (-EPERM) pour REFUSER l'opération au niveau
+ *  du kernel (CLAUDE.md §2.2). Décision :
+ *    accès à un canary OU à un fichier sous dossier protégé
+ *    ET processus non whitelisté  =>  return -EPERM (si enforce).
+ *  Un accès canary déclenche en plus une alerte immédiate (EVENT_CANARY_HIT)
+ *  indépendamment de tout seuil d'I/O (cahier §12 : blocage dès le 1er hit,
+ *  mitige la race condition du chiffrement rapide).
+ * ===================================================================== */
+
+/* Le comm courant est-il dans la whitelist ? */
+static __always_inline int is_whitelisted(void)
+{
+	char comm[TASK_COMM_LEN] = {};
+	bpf_get_current_comm(&comm, sizeof(comm));
+	return bpf_map_lookup_elem(&whitelist, &comm) != NULL;
+}
+
+/* Recherche l'inode dans la table des fichiers protégés (clé dev+ino). */
+static __always_inline struct protect_val *lookup_inode(struct inode *inode)
+{
+	struct file_key key = {};
+
+	if (!inode)
+		return NULL;
+	key.ino = BPF_CORE_READ(inode, i_ino);
+	key.dev = BPF_CORE_READ(inode, i_sb, s_dev);
+	return bpf_map_lookup_elem(&protected_files, &key);
+}
+
+/* Remonte jusqu'à 16 dentries parents pour voir si la cible est un canary
+ * (itération 0 : l'inode lui-même) ou se trouve sous un dossier protégé.
+ * Boucle bornée => acceptée par le verifier. Renseigne *is_canary. */
+static __always_inline int under_protection(struct dentry *dentry, int *is_canary)
+{
+	struct dentry *d = dentry;
+	struct canaris_config *cfg = get_config();
+	int walk_dirs = cfg && cfg->have_dirs;
+
+	*is_canary = 0;
+
+	/* Boucle bornée (<= 16) : le verifier des kernels >= 5.3 la gère
+	 * nativement, pas besoin de #pragma unroll (qui échoue à cause des
+	 * ruptures conditionnelles et générerait un warning). */
+	for (int i = 0; i < 16; i++) {
+		if (!d)
+			break;
+		struct inode *inode = BPF_CORE_READ(d, d_inode);
+		struct protect_val *pv = lookup_inode(inode);
+		if (pv) {
+			if (pv->is_canary)
+				*is_canary = 1;
+			return 1;
+		}
+		/* Si aucun dossier protégé enregistré, inutile de remonter :
+		 * seule l'itération 0 (le fichier lui-même) compte. */
+		if (!walk_dirs)
+			break;
+		struct dentry *parent = BPF_CORE_READ(d, d_parent);
+		if (parent == d) /* racine atteinte */
+			break;
+		d = parent;
+	}
+	return 0;
+}
+
+/* Émet un événement de décision (blocage/alerte) avec le nom de la cible. */
+static __always_inline void emit_decision(int is_canary, struct dentry *dentry,
+					  struct inode *inode, int enforced)
+{
+	struct canaris_event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+	if (!e)
+		return;
+	fill_common(e, is_canary ? EVENT_CANARY_HIT : EVENT_BLOCKED);
+	e->ret = enforced ? -1 : 0;
+	if (inode) {
+		e->ino = BPF_CORE_READ(inode, i_ino);
+		e->dev = BPF_CORE_READ(inode, i_sb, s_dev);
+	}
+	/* nom court de la cible (best-effort, un seul composant de dentry) */
+	if (dentry) {
+		const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
+		if (name)
+			bpf_probe_read_kernel_str(&e->filename,
+						  sizeof(e->filename), name);
+	}
+	bpf_ringbuf_submit(e, 0);
+}
+
+/* Cœur de décision commun aux trois hooks. Renvoie le verdict LSM. */
+static __always_inline int decide(struct dentry *dentry, struct inode *inode)
+{
+	struct canaris_config *cfg;
+	int is_canary = 0;
+
+	if (!under_protection(dentry, &is_canary))
+		return 0;                 /* cible non protégée : autoriser   */
+	if (is_whitelisted())
+		return 0;                 /* processus de confiance : autoriser */
+
+	cfg = get_config();
+	int enforce = cfg && cfg->enforce;
+
+	emit_decision(is_canary, dentry, inode, enforce);
+	return enforce ? -EPERM : 0;
+}
+
+/* lsm/file_open : refuse l'ouverture d'un canary/fichier protégé. */
+SEC("lsm/file_open")
+int BPF_PROG(canaris_file_open, struct file *file, int ret)
+{
+	if (ret != 0)            /* un LSM précédent a déjà tranché : respecter */
+		return ret;
+	struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
+	struct inode *inode = BPF_CORE_READ(file, f_inode);
+	return decide(dentry, inode);
+}
+
+/* lsm/inode_unlink : refuse la suppression d'un canary/fichier protégé
+ * (les ransomwares suppriment/remplacent les originaux). */
+SEC("lsm/inode_unlink")
+int BPF_PROG(canaris_inode_unlink, struct inode *dir, struct dentry *dentry,
+	     int ret)
+{
+	if (ret != 0)
+		return ret;
+	struct inode *victim = BPF_CORE_READ(dentry, d_inode);
+	return decide(dentry, victim);
+}
+
+/* lsm/inode_rename : refuse le renommage d'un canary/fichier protégé
+ * (technique .locked/.encrypted très répandue). */
+SEC("lsm/inode_rename")
+int BPF_PROG(canaris_inode_rename, struct inode *old_dir,
+	     struct dentry *old_dentry, struct inode *new_dir,
+	     struct dentry *new_dentry, int ret)
+{
+	if (ret != 0)
+		return ret;
+	struct inode *victim = BPF_CORE_READ(old_dentry, d_inode);
+	return decide(old_dentry, victim);
 }

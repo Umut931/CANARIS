@@ -1,0 +1,28 @@
+# CANARIS — whitelist noyau (Linux) : processus de confiance exemptés du blocage.
+# Un "comm" par ligne (nom court du process, max 15 caractères, cf. TASK_COMM_LEN).
+# Poussé dans la map BPF `whitelist` par le loader (--whitelist config/whitelist.txt).
+#
+# ⚠️ Le comm est falsifiable (limitation documentée, docs/LIMITATIONS.md). Une
+# version durcie identifierait l'exécutable par son inode. Ce fichier reste
+# cohérent avec les profils whitelistés de config/profiles.json.
+#
+# --- Gestionnaires de paquets / build (créent beaucoup de fichiers légitimes) ---
+node
+npm
+yarn
+pnpm
+make
+cc1
+gcc
+ld
+# --- Contrôle de version ---
+git
+git-remote-http
+# git-remote-https est tronqué à 15 car -> "git-remote-http"
+# --- Backup / sync (dont notre propre moteur de snapshot) ---
+rsync
+# --- IDE ---
+code
+# --- Le responder CANARIS lui-même (ne jamais s'auto-bloquer) ---
+canaris
+canaris-respond

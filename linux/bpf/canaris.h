@@ -65,7 +65,10 @@ struct protect_val {
 struct canaris_config {
 	__u32 self_tgid;   /* TGID du loader lui-même : à ne jamais bloquer  */
 	__u8  enforce;     /* 1 = LSM bloque (-EPERM), 0 = observe seulement  */
-	__u8  _pad[3];
+	__u8  have_dirs;   /* 1 = au moins un dossier protégé enregistré :    */
+	                   /*     n'active la remontée d'ancêtres que si vrai */
+	                   /*     (optimisation : évite le walk sur chaque open) */
+	__u8  _pad[2];
 };
 
 #endif /* CANARIS_H */
