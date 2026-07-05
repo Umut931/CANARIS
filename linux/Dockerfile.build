@@ -1,0 +1,33 @@
+# CANARIS — image de build reproductible pour le composant Linux (eBPF + loader).
+#
+# Permet de compiler l'eBPF CO-RE et le loader libbpf sans installer la
+# toolchain sur l'hôte. Le BPF verifier (bpftool prog load) nécessite en plus
+# un conteneur --privileged sur un kernel avec BTF (le kernel WSL2 6.x convient).
+#
+#   docker build -t canaris-build -f linux/Dockerfile.build linux
+#   docker run --rm -v "$PWD:/work" -w /work canaris-build make -C linux
+#   # verifier (root + BTF) :
+#   docker run --rm --privileged -v "$PWD:/work" -w /work canaris-build \
+#       sh -c "mount -t bpf bpf /sys/fs/bpf 2>/dev/null; make -C linux verify"
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang \
+        llvm \
+        libbpf-dev \
+        linux-tools-generic \
+        make \
+        gcc \
+        libelf-dev \
+        zlib1g-dev \
+        pkg-config \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    # Le paquet fournit bpftool sous /usr/lib/linux-tools/<ver>/ ; le wrapper
+    # /usr/sbin/bpftool dépend de `uname -r` (= kernel hôte dans un conteneur),
+    # ce qui échoue. On lie directement le vrai binaire.
+    && ln -sf "$(find /usr/lib/linux-tools -name bpftool | head -1)" /usr/local/bin/bpftool \
+    && bpftool version
+
+WORKDIR /work
