@@ -98,4 +98,28 @@ sur une VM Ubuntu bootée avec `lsm=lockdown,capability,yama,apparmor,bpf`
 (commandes exactes : HANDOFF.md T-L4). Le code est prouvé correct par le verifier ;
 seule l'activation du hook dépend de la config kernel de la cible.
 
+## Phase 3 — Générateur de canary files — ✅ VALIDÉ RÉELLEMENT
+
+12 tests `pytest` verts (exécutés sur la machine de dev Windows) :
+
+```
+$ python -m pytest tests/test_canary_generator.py -q
+............                                          12 passed
+```
+
+Preuves couvertes (cahier F1) :
+- **F1.3 entropie** : chaque canary < 6 bits/octet (lot de 24, moyenne ~4.5).
+  Sanity : flux constant = 0.0, `os.urandom` > 7.5.
+- **F1.2 taille** : toutes dans [50 Ko, 5 Mo], distribution log-normale variée
+  (≥ 8 tailles distinctes, ratio max/min > 2).
+- **F1.1 magic bytes** : `%PDF-` pour PDF (avec xref/trailer/%%EOF), `PK\x03\x04`
+  pour docx/xlsx **qui sont des ZIP OOXML valides** (`[Content_Types].xml`,
+  `word/document.xml` / `xl/workbook.xml` présents, `testzip()` OK).
+- **F1.4 timestamps** : mtime réécrit > 30 jours dans le passé, cohérent avec btime.
+  **Windows btime réellement positionné** via `SetFileTime` (ctypes kernel32) —
+  vérifié : `st_ctime` d'un canary tombe en 2024 (passé). Sous Linux, btime
+  nécessite debugfs → documenté [HANDOFF].
+- **F1.5/F1.6 nommage/placement** : noms crédibles (jamais "canary.*"),
+  sous-dossiers ≥ 2 niveaux.
+
 <!-- Les phases suivantes ajoutent leurs preuves ici. -->
