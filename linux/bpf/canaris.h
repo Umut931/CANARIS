@@ -39,8 +39,10 @@ struct canaris_event {
 	__u32 flags;                     /* open flags / fd / rename flags   */
 	__u64 ino;                       /* inode cible (0 si inconnu)       */
 	__u32 dev;                       /* device de l'inode                */
-	__u32 _pad;
-	char  comm[TASK_COMM_LEN];       /* nom du process appelant          */
+	__u8  whitelisted;               /* 1 = exécutable appelant whitelisté */
+	                                 /*     (identifié par inode, pas comm) */
+	__u8  _pad[3];
+	char  comm[TASK_COMM_LEN];       /* nom du process (AFFICHAGE seulement) */
 	char  filename[MAX_FILENAME_LEN];/* chemin (kprobe) ou nom dentry    */
 };
 

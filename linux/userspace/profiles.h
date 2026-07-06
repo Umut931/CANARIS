@@ -63,12 +63,15 @@ struct pid_state *pidstate_table_new(void);
 void pidstate_table_free(struct pid_state *table);
 
 /* Traite un événement. `is_canary` = 1 si accès canary (LSM ou match chemin).
- * `type` : 0=OPEN/WRITE/RENAME (compte comme I/O), 1=UNLINK.
+ * `is_unlink` = 1 pour une suppression. `is_whitelisted` = 1 si l'EXÉCUTABLE
+ * appelant est whitelisté (identifié par inode, calculé côté eBPF) — c'est LUI
+ * qui exempte, pas le comm (le `comm` ne sert qu'au profil de seuil + affichage).
  * Renvoie la raison de déclenchement (ou VERDICT_NONE). Remplit *detail. */
 enum verdict_reason detector_observe(const struct profiles_config *cfg,
 				     struct pid_state *table,
 				     uint32_t pid, const char *comm,
 				     double now, int is_canary, int is_unlink,
+				     int is_whitelisted,
 				     char *detail, int detail_len);
 
 #endif /* CANARIS_PROFILES_H */

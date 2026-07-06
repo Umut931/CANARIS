@@ -1,30 +1,19 @@
-# CANARIS — whitelist noyau (Linux) : processus de confiance exemptés du blocage.
-# Un "comm" par ligne (nom court du process, max 15 caractères, cf. TASK_COMM_LEN).
-# Poussé dans la map BPF `whitelist` par le loader (--whitelist config/whitelist.txt).
-#
-# ⚠️ Le comm est falsifiable (limitation documentée, docs/LIMITATIONS.md). Une
-# version durcie identifierait l'exécutable par son inode. Ce fichier reste
-# cohérent avec les profils whitelistés de config/profiles.json.
-#
-# --- Gestionnaires de paquets / build (créent beaucoup de fichiers légitimes) ---
-node
-npm
-yarn
-pnpm
-make
-cc1
-gcc
-ld
-# --- Contrôle de version ---
-git
-git-remote-http
-# git-remote-https est tronqué à 15 car -> "git-remote-http"
-# --- Backup / sync (dont notre propre moteur de snapshot) ---
-rsync
-# cp : repli du responder quand rsync est absent (écrit dans snapshots/ protégé)
-cp
-# --- IDE ---
-code
-# --- Le responder CANARIS lui-même (ne jamais s'auto-bloquer) ---
-canaris
-canaris-respond
+# CANARIS whitelist noyau — DÉRIVÉ de config/profiles.json.
+# Ne pas éditer à la main : lancer common/profiles_compile.py.
+# EXÉCUTABLES de confiance (chemins absolus, UN par ligne, sans commentaire
+# en ligne). Le loader résout chaque chemin en (device, inode) : l'exemption
+# est par INODE, jamais par comm (falsifiable). Chemins absents = ignorés.
+/usr/bin/node
+/usr/local/bin/node
+/usr/bin/git
+/usr/lib/git-core/git-remote-https
+/usr/bin/rsync
+/bin/rsync
+/usr/bin/cp
+/usr/bin/code
+/usr/local/bin/canaris
+/usr/bin/make
+/usr/bin/cc
+/usr/bin/gcc
+/usr/bin/ld
+/bin/cp

@@ -37,43 +37,56 @@ int main(void)
 
 	printf("== test_detector ==\n");
 
-	/* 1) rafale ransomware -> io_rate */
+	/* arguments detector_observe : (..., is_canary, is_unlink, is_whitelisted, ...) */
+
+	/* 1) rafale ransomware -> io_rate (exe non whitelisté) */
 	{
 		struct pid_state *t = pidstate_table_new();
 		enum verdict_reason v = VERDICT_NONE;
 		for (int i = 0; i < 200 && v == VERDICT_NONE; i++)
 			v = detector_observe(&cfg, t, 42, "cryptor", i * 0.001,
-					     0, 0, detail, sizeof(detail));
+					     0, 0, 0, detail, sizeof(detail));
 		CHECK(v == VERDICT_IO_RATE, "rafale inconnue -> io_rate");
 		pidstate_table_free(t);
 	}
 
-	/* 2) process whitelisté au même débit -> aucune détection */
+	/* 2) EXÉCUTABLE whitelisté (inode) au même débit -> aucune détection */
 	{
 		struct pid_state *t = pidstate_table_new();
 		enum verdict_reason v = VERDICT_NONE;
 		for (int i = 0; i < 500 && v == VERDICT_NONE; i++)
 			v = detector_observe(&cfg, t, 43, "node", i * 0.001,
-					     0, 0, detail, sizeof(detail));
-		CHECK(v == VERDICT_NONE, "node whitelisté -> pas de détection");
+					     0, 0, 1 /*whitelisté*/, detail, sizeof(detail));
+		CHECK(v == VERDICT_NONE, "exe whitelisté (inode) -> pas de détection");
 		pidstate_table_free(t);
 	}
 
-	/* 3) accès canary -> réponse immédiate (1 seul événement) */
+	/* 3) accès canary -> réponse immédiate (exe non whitelisté) */
 	{
 		struct pid_state *t = pidstate_table_new();
 		enum verdict_reason v = detector_observe(&cfg, t, 44, "cryptor",
-			0.0, 1 /*canary*/, 0, detail, sizeof(detail));
+			0.0, 1 /*canary*/, 0, 0, detail, sizeof(detail));
 		CHECK(v == VERDICT_CANARY, "accès canary -> immédiat");
 		pidstate_table_free(t);
 	}
 
-	/* 4) canary par process whitelisté -> autorisé */
+	/* 4) canary par EXÉCUTABLE whitelisté -> autorisé */
 	{
 		struct pid_state *t = pidstate_table_new();
 		enum verdict_reason v = detector_observe(&cfg, t, 45, "node",
-			0.0, 1 /*canary*/, 0, detail, sizeof(detail));
-		CHECK(v == VERDICT_NONE, "canary + whitelisté -> autorisé");
+			0.0, 1 /*canary*/, 0, 1 /*whitelisté*/, detail, sizeof(detail));
+		CHECK(v == VERDICT_NONE, "canary + exe whitelisté -> autorisé");
+		pidstate_table_free(t);
+	}
+
+	/* 4b) ANTI-SPOOF : comm 'node' (profil whitelisté historique) MAIS exe non
+	 *     whitelisté -> le canary est quand même détecté. Le comm ne protège pas. */
+	{
+		struct pid_state *t = pidstate_table_new();
+		enum verdict_reason v = detector_observe(&cfg, t, 99, "node",
+			0.0, 1 /*canary*/, 0, 0 /*exe NON whitelisté*/, detail, sizeof(detail));
+		CHECK(v == VERDICT_CANARY,
+		      "comm 'node' spoofé (exe non whitelisté) -> détecté (pas d'exemption par comm)");
 		pidstate_table_free(t);
 	}
 
@@ -83,7 +96,7 @@ int main(void)
 		enum verdict_reason v = VERDICT_NONE;
 		for (int i = 0; i < 35 && v == VERDICT_NONE; i++)
 			v = detector_observe(&cfg, t, 46, "wiper", i * 0.001,
-					     0, 1 /*unlink*/, detail, sizeof(detail));
+					     0, 1 /*unlink*/, 0, detail, sizeof(detail));
 		CHECK(v == VERDICT_MASS_DELETE || v == VERDICT_IO_RATE,
 		      "suppression massive détectée");
 		pidstate_table_free(t);
@@ -95,7 +108,7 @@ int main(void)
 		enum verdict_reason first = VERDICT_NONE, again = VERDICT_NONE;
 		for (int i = 0; i < 200; i++) {
 			enum verdict_reason v = detector_observe(&cfg, t, 47,
-				"cryptor", i * 0.001, 0, 0, detail, sizeof(detail));
+				"cryptor", i * 0.001, 0, 0, 0, detail, sizeof(detail));
 			if (v != VERDICT_NONE) { if (!first) first = v; else again = v; }
 		}
 		CHECK(first == VERDICT_IO_RATE && again == VERDICT_NONE,

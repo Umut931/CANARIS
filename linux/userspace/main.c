@@ -252,13 +252,28 @@ static int add_protected(struct canaris_bpf *skel, const char *path,
 	return err;
 }
 
-static int add_whitelist_comm(struct canaris_bpf *skel, const char *name)
+/* Whitelist un EXÉCUTABLE par (dev, inode) de son binaire — pas par comm
+ * (falsifiable). Le chemin doit exister ; sinon la ligne est ignorée. */
+static int add_whitelist_exe(struct canaris_bpf *skel, const char *exe_path)
 {
-	char comm[TASK_COMM_LEN] = {};
-	strncpy(comm, name, TASK_COMM_LEN - 1);
+	struct stat st;
+	if (stat(exe_path, &st) != 0) {
+		/* silencieux : un système n'a pas forcément tous les binaires listés */
+		if (env.verbose)
+			fprintf(stderr, "  . whitelist: %s absent, ignoré\n", exe_path);
+		return -1;
+	}
+	struct file_key key = {
+		.ino = (__u64)st.st_ino,
+		.dev = kernel_dev(st.st_dev),
+	};
 	__u8 one = 1;
-	return bpf_map__update_elem(skel->maps.whitelist, comm, sizeof(comm),
-				    &one, sizeof(one), BPF_ANY);
+	int err = bpf_map__update_elem(skel->maps.whitelist, &key, sizeof(key),
+				       &one, sizeof(one), BPF_ANY);
+	if (!err && env.verbose)
+		printf("  + whitelist exe %s (dev=%u ino=%llu)\n",
+		       exe_path, key.dev, (unsigned long long)key.ino);
+	return err;
 }
 
 /* Lit un fichier de lignes (comm ou chemin), applique cb sur chacune. */
@@ -278,9 +293,13 @@ static int foreach_line(const char *path,
 		while (*s == ' ' || *s == '\t') s++;
 		if (*s == '#' || *s == '\n' || *s == '\0')
 			continue;
+		/* coupe un éventuel commentaire en ligne " #..." (robustesse) */
+		char *hash = strstr(s, " #");
+		if (hash)
+			*hash = '\0';
 		size_t len = strlen(s);
 		while (len > 0 && (s[len - 1] == '\n' || s[len - 1] == '\r' ||
-				   s[len - 1] == ' '))
+				   s[len - 1] == ' ' || s[len - 1] == '\t'))
 			s[--len] = '\0';
 		if (len == 0)
 			continue;
@@ -291,9 +310,9 @@ static int foreach_line(const char *path,
 	return n;
 }
 
-static int wl_cb(struct canaris_bpf *skel, const char *name)
+static int wl_cb(struct canaris_bpf *skel, const char *exe_path)
 {
-	return add_whitelist_comm(skel, name);
+	return add_whitelist_exe(skel, exe_path);
 }
 static int canary_cb(struct canaris_bpf *skel, const char *path)
 {
@@ -434,9 +453,10 @@ static int handle_event(void *ctx, void *data, size_t sz)
 			int is_unlink = (e->event_type == EVENT_UNLINK);
 			double t = e->timestamp_ns / 1e9;
 			char detail[128];
+			/* exemption par inode d'exécutable (calculée côté eBPF) */
 			enum verdict_reason v = detector_observe(app->cfg, app->table,
 				e->tgid, e->comm, t, canary, is_unlink,
-				detail, sizeof(detail));
+				e->whitelisted, detail, sizeof(detail));
 			if (v != VERDICT_NONE && app->resp) {
 				responder_respond(app->resp, e->tgid, e->comm,
 						  reason_str(v), detail,

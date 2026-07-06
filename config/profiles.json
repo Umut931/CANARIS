@@ -1,68 +1,31 @@
 {
-  "_comment": "CANARIS — profils de seuil adaptatif par processus (CLAUDE.md §2.3, cahier §F3.2). Le seuil GLOBAL fixe n'est qu'un secours de dernier recours. Chaque profil calibre une baseline d'I/O pour un exécutable légitime connu afin d'éviter les faux positifs (npm install, git clone, sync OneDrive, scan Defender).",
+  "_comment": "CANARIS — profils curatés par processus (CLAUDE.md §2.3, cahier F3.2). NB : ce ne sont PAS des baselines apprises (pas d'apprentissage adaptatif) mais une liste CURATÉE d'exécutables de confiance + un seuil par défaut. Choix d'ingénierie assumé (robuste, prévisible) — voir docs/LIMITATIONS.md.",
 
   "default": {
     "window_seconds": 2.0,
     "io_threshold": 60,
-    "description": "Seuil global de secours. Volontairement conservateur ; ne s'applique qu'aux process sans profil dédié. Un ransomware dépasse largement 60 I/O/2s sur des fichiers distincts avec pattern read-then-write."
+    "description": "Seuil unique appliqué à TOUT processus non whitelisté. Un ransomware dépasse largement 60 I/O/2s sur des fichiers distincts (read-then-write). Les apps légitimes à fort débit (npm, git, sync) sont whitelistées par INODE d'exécutable (exemptées), jamais par un seuil élevé accordé au nom (falsifiable)."
   },
 
-  "profiles": [
-    {
-      "match": "node",
-      "aliases": ["node.exe", "npm", "npm.cmd", "yarn", "pnpm"],
-      "window_seconds": 2.0,
-      "io_threshold": 4000,
-      "whitelisted": true,
-      "description": "npm/yarn install crée des milliers de petits fichiers légitimes. Baseline très élevée + whitelist."
-    },
-    {
-      "match": "git",
-      "aliases": ["git.exe", "git-remote-https"],
-      "window_seconds": 2.0,
-      "io_threshold": 3000,
-      "whitelisted": true,
-      "description": "git clone/checkout volumineux touche beaucoup de fichiers d'objets."
-    },
-    {
-      "match": "rsync",
-      "aliases": ["rsync.exe"],
-      "window_seconds": 2.0,
-      "io_threshold": 5000,
-      "whitelisted": true,
-      "description": "Outil de backup légitime — c'est aussi notre moteur de snapshot. Exempté."
-    },
-    {
-      "match": "OneDrive",
-      "aliases": ["OneDrive.exe", "onedrive"],
-      "window_seconds": 2.0,
-      "io_threshold": 2000,
-      "whitelisted": true,
-      "description": "Synchronisation cloud : rafales de lecture/écriture légitimes."
-    },
-    {
-      "match": "MsMpEng",
-      "aliases": ["MsMpEng.exe"],
-      "window_seconds": 2.0,
-      "io_threshold": 10000,
-      "whitelisted": true,
-      "description": "Microsoft Defender (scan) lit massivement — ne jamais tuer l'AV."
-    },
-    {
-      "match": "code",
-      "aliases": ["code.exe", "Code.exe", "codium"],
-      "window_seconds": 2.0,
-      "io_threshold": 1500,
-      "whitelisted": true,
-      "description": "IDE VS Code : indexation, sauvegardes fréquentes."
-    }
+  "whitelisted_executables": [
+    { "path": "/usr/bin/node",        "note": "npm/yarn/pnpm builds (node_modules massif)" },
+    { "path": "/usr/local/bin/node",  "note": "node installé via nvm/pkg" },
+    { "path": "/usr/bin/git",         "note": "git clone/checkout volumineux" },
+    { "path": "/usr/lib/git-core/git-remote-https", "note": "transport git" },
+    { "path": "/usr/bin/rsync",       "note": "backup/sync + moteur de snapshot CANARIS" },
+    { "path": "/bin/rsync",           "note": "rsync (chemin alternatif)" },
+    { "path": "/usr/bin/cp",          "note": "repli du responder pour les snapshots" },
+    { "path": "/usr/bin/code",        "note": "VS Code (indexation, sauvegardes)" },
+    { "path": "/usr/local/bin/canaris","note": "le responder CANARIS lui-même" }
   ],
+  "_whitelist_comment": "L'exemption est décidée par (device, inode) du binaire, PAS par le comm (falsifiable via prctl/argv[0]). config/whitelist.txt en est dérivé par common/profiles_compile.py. Windows : chemin d'image complet normalisé. Durcissement futur : vérification Authenticode (docs/LIMITATIONS.md).",
 
   "detection": {
     "canary_hit_is_immediate": true,
-    "canary_hit_comment": "Un seul accès à un canary par un process non whitelisté déclenche la réponse immédiatement, sans attendre le seuil (cahier §12 : blocage dès le 1er hit — mitige la race condition du chiffrement rapide).",
+    "canary_hit_comment": "Un seul accès à un canary par un exécutable non whitelisté déclenche la réponse immédiatement, sans attendre le seuil (cahier §12 : blocage dès le 1er hit — mitige la race condition du chiffrement rapide).",
     "read_then_write_weight": 2.0,
-    "read_then_write_comment": "Le pattern lire-puis-écrire le même fichier (signature du chiffrement en place) compte double dans le score.",
+    "read_then_write_threshold": 12,
+    "read_then_write_comment": "Le pattern lire-puis-écrire le même fichier (signature du chiffrement en place) est un signal fort.",
     "mass_delete_threshold": 30,
     "mass_delete_comment": "Suppression de N fichiers distincts dans la fenêtre = signal fort."
   }

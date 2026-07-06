@@ -61,14 +61,15 @@ struct {
 	__type(value, struct protect_val);
 } protected_files SEC(".maps");
 
-/* Whitelist de processus légitimes (backup, sync, IDE, gestionnaires de
- * paquets) exemptés du blocage. Clé = comm[16]. Alimentée par l'userspace.
- * NB : le comm est falsifiable — limitation documentée (docs/LIMITATIONS.md) ;
- * une version durcie utiliserait l'inode de l'exécutable. */
+/* Whitelist d'EXÉCUTABLES de confiance, identifiés par (device, inode) de leur
+ * binaire — PAS par comm (le comm est falsifiable via prctl/argv[0], cf.
+ * docs/LIMITATIONS.md). Un process renommé « rsync » mais dont le binaire n'est
+ * pas le rsync whitelisté n'est donc PAS exempté. Alimentée par l'userspace
+ * (stat de chaque chemin d'exécutable). */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
-	__type(key, char[TASK_COMM_LEN]);
+	__type(key, struct file_key);
 	__type(value, __u8);
 } whitelist SEC(".maps");
 
@@ -78,6 +79,24 @@ static __always_inline struct canaris_config *get_config(void)
 {
 	__u32 zero = 0;
 	return bpf_map_lookup_elem(&config_map, &zero);
+}
+
+/* Whitelist par inode d'EXÉCUTABLE (task->mm->exe_file), pas par comm.
+ * Renvoie 1 si le binaire de l'appelant est whitelisté. Robuste au spoofing du
+ * comm/argv[0]. Renvoie 0 pour les threads noyau (mm == NULL). */
+static __always_inline int is_whitelisted(void)
+{
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	struct file *exe = BPF_CORE_READ(task, mm, exe_file);
+	if (!exe)
+		return 0;
+	struct inode *inode = BPF_CORE_READ(exe, f_inode);
+	if (!inode)
+		return 0;
+	struct file_key key = {};
+	key.ino = BPF_CORE_READ(inode, i_ino);
+	key.dev = BPF_CORE_READ(inode, i_sb, s_dev);
+	return bpf_map_lookup_elem(&whitelist, &key) != NULL;
 }
 
 /* Renseigne les champs communs (pid/tgid/uid/comm/timestamp) d'un événement. */
@@ -93,7 +112,8 @@ static __always_inline void fill_common(struct canaris_event *e, __u32 type)
 	e->flags = 0;
 	e->ino = 0;
 	e->dev = 0;
-	e->_pad = 0;
+	e->whitelisted = is_whitelisted() ? 1 : 0;  /* par inode d'exécutable */
+	e->_pad[0] = e->_pad[1] = e->_pad[2] = 0;
 	e->filename[0] = '\0';
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 }
@@ -193,13 +213,6 @@ int BPF_KSYSCALL(canaris_write, unsigned int fd, const char *buf, size_t count)
  * ===================================================================== */
 
 /* Le comm courant est-il dans la whitelist ? */
-static __always_inline int is_whitelisted(void)
-{
-	char comm[TASK_COMM_LEN] = {};
-	bpf_get_current_comm(&comm, sizeof(comm));
-	return bpf_map_lookup_elem(&whitelist, &comm) != NULL;
-}
-
 /* Recherche l'inode dans la table des fichiers protégés (clé dev+ino). */
 static __always_inline struct protect_val *lookup_inode(struct inode *inode)
 {

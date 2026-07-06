@@ -148,7 +148,14 @@ static BOOLEAN CanarisIsProtected(_In_ PUNICODE_STRING Target, _Out_ PBOOLEAN Is
 }
 
 //
-// Le processus appelant est-il whitelisté (par chemin d'exécutable) ?
+// Le processus appelant est-il whitelisté ?
+//
+// Durcissement T2 : comparaison du CHEMIN D'IMAGE COMPLET normalisé
+// (\Device\HarddiskVolumeN\...), PAS un suffixe (un attaquant nommant son
+// binaire « rsync.exe » ne doit pas être exempté). Le service pousse les
+// chemins whitelistés déjà convertis en forme device (voir service.cpp).
+// Robustesse maximale visée = vérification Authenticode (hors scope, cf.
+// windows/REVIEW_NOTES.md et docs/LIMITATIONS.md).
 //
 static BOOLEAN CanarisIsWhitelisted(VOID)
 {
@@ -164,16 +171,10 @@ static BOOLEAN CanarisIsWhitelisted(VOID)
     ExAcquireFastMutex(&gListLock);
     for (e = gWhitelist.Flink; e != &gWhitelist; e = e->Flink) {
         PCANARIS_ENTRY entry = CONTAINING_RECORD(e, CANARIS_ENTRY, Link);
-        // suffixe : l'image finit-elle par le nom whitelisté ?
-        if (image->Length >= entry->Path.Length) {
-            UNICODE_STRING tail;
-            tail.Buffer = (PWCH)((PUCHAR)image->Buffer + image->Length - entry->Path.Length);
-            tail.Length = entry->Path.Length;
-            tail.MaximumLength = entry->Path.Length;
-            if (RtlEqualUnicodeString(&tail, &entry->Path, TRUE)) {
-                white = TRUE;
-                break;
-            }
+        // Égalité EXACTE du chemin d'image complet (insensible à la casse).
+        if (RtlEqualUnicodeString(&entry->Path, image, TRUE)) {
+            white = TRUE;
+            break;
         }
     }
     ExReleaseFastMutex(&gListLock);

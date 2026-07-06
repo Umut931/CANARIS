@@ -52,9 +52,11 @@ class Event:
     ts: float          # secondes (epoch ou monotonic cohérent)
     type: str          # EV_*
     pid: int
-    comm: str          # nom court du process (<=15 car)
+    comm: str          # nom court du process — AFFICHAGE seulement (falsifiable)
     path: str = ""     # chemin cible (vide pour WRITE : fd sans chemin)
     flags: int = 0     # flags open() (pour OPEN)
+    exe: str = ""      # chemin de l'EXÉCUTABLE appelant — sert à la whitelist
+                       # (identité par inode/chemin, pas le comm)
 
 
 @dataclass
@@ -81,46 +83,45 @@ class _PidState:
 class Profiles:
     """Charge et interroge les profils de seuil adaptatif (config/profiles.json)."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, extra_whitelist=None):
         self.default = config.get("default", {"window_seconds": 2.0, "io_threshold": 60})
         self.detection = config.get("detection", {})
-        # index comm -> profil (via match + aliases)
-        self._index = {}
-        for prof in config.get("profiles", []):
-            names = [prof.get("match", "")] + list(prof.get("aliases", []))
-            for n in names:
-                if n:
-                    self._index[self._norm(n)] = prof
+        # Whitelist d'EXÉCUTABLES (par chemin/identité), jamais par comm.
+        self.whitelisted_exes = set()
+        for entry in config.get("whitelisted_executables", []):
+            path = entry["path"] if isinstance(entry, dict) else str(entry)
+            self.whitelisted_exes.add(self._norm_exe(path))
+        for path in (extra_whitelist or []):
+            self.whitelisted_exes.add(self._norm_exe(path))
 
     @staticmethod
-    def _norm(name: str) -> str:
-        # comm noyau : 15 car max, sans extension .exe (Linux)
-        name = name.strip()
-        if name.lower().endswith(".exe"):
-            name = name[:-4]
-        return name[:15]
+    def _norm_exe(path: str) -> str:
+        """Identité d'exécutable : (device, inode) si le fichier existe (robuste
+        aux liens/chemins), sinon le chemin normalisé (utile en test)."""
+        path = str(path).strip()
+        try:
+            st = os.stat(path)
+            return f"dev{st.st_dev}:ino{st.st_ino}"
+        except OSError:
+            return os.path.normcase(os.path.normpath(path))
 
-    def for_comm(self, comm: str) -> dict:
-        return self._index.get(self._norm(comm))
+    def window(self) -> float:
+        return float(self.default.get("window_seconds", 2.0))
 
-    def window(self, comm: str) -> float:
-        p = self.for_comm(comm)
-        return float((p or self.default).get("window_seconds",
-                     self.default.get("window_seconds", 2.0)))
+    def threshold(self) -> int:
+        return int(self.default.get("io_threshold", 60))
 
-    def threshold(self, comm: str) -> int:
-        p = self.for_comm(comm)
-        return int((p or self.default).get("io_threshold",
-                   self.default.get("io_threshold", 60)))
-
-    def is_whitelisted(self, comm: str) -> bool:
-        p = self.for_comm(comm)
-        return bool(p and p.get("whitelisted"))
+    def is_whitelisted_exe(self, exe: str) -> bool:
+        """True si l'exécutable (par identité inode/chemin) est whitelisté.
+        Le comm n'entre JAMAIS en jeu (anti-spoofing, T2)."""
+        if not exe:
+            return False
+        return self._norm_exe(exe) in self.whitelisted_exes
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path, extra_whitelist=None):
         with open(path, encoding="utf-8") as f:
-            return cls(json.load(f))
+            return cls(json.load(f), extra_whitelist=extra_whitelist)
 
 
 class Detector:
@@ -173,9 +174,10 @@ class Detector:
     def observe(self, ev: Event):
         st = self.state[ev.pid]
         st.comm = ev.comm
-        whitelisted = self.profiles.is_whitelisted(ev.comm)
+        # Exemption par EXÉCUTABLE (identité inode/chemin), jamais par comm (T2).
+        whitelisted = self.profiles.is_whitelisted_exe(ev.exe)
 
-        # 1) Accès canary => réponse IMMÉDIATE (sauf process whitelisté).
+        # 1) Accès canary => réponse IMMÉDIATE (sauf exécutable whitelisté).
         if self._is_canary(ev) and not whitelisted:
             if not st.responded:
                 st.responded = True
@@ -183,12 +185,14 @@ class Detector:
                                f"accès canary {ev.path or '(cible)'}", 1000.0, ev.ts)
             return None
 
-        # Les process de confiance ne déclenchent jamais les seuils comportementaux.
+        # Les exécutables de confiance ne déclenchent jamais les seuils.
         if whitelisted:
             return None
 
-        window = self.profiles.window(ev.comm)
-        threshold = self.profiles.threshold(ev.comm)
+        # Seuil PAR DÉFAUT pour tout non-whitelisté (jamais élevé sur la foi du
+        # comm falsifiable — un ransomware nommé « rsync » garde le seuil défaut).
+        window = self.profiles.window()
+        threshold = self.profiles.threshold()
 
         # 2) Mise à jour de la fenêtre glissante.
         if ev.type in (EV_OPEN, EV_WRITE, EV_UNLINK, EV_RENAME):

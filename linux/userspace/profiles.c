@@ -120,12 +120,11 @@ enum verdict_reason detector_observe(const struct profiles_config *cfg,
 				     struct pid_state *table,
 				     uint32_t pid, const char *comm,
 				     double now, int is_canary, int is_unlink,
+				     int is_whitelisted,
 				     char *detail, int detail_len)
 {
-	const struct profile *prof = profiles_match(cfg, comm);
-
-	/* 1) Accès canary => réponse immédiate (sauf whitelist). */
-	if (is_canary && !prof->whitelisted) {
+	/* 1) Accès canary => réponse immédiate (sauf exécutable whitelisté). */
+	if (is_canary && !is_whitelisted) {
 		struct pid_state *st = pidstate_get(table, pid, comm);
 		if (st->responded)
 			return VERDICT_NONE;
@@ -133,8 +132,14 @@ enum verdict_reason detector_observe(const struct profiles_config *cfg,
 		snprintf(detail, detail_len, "acces canary");
 		return VERDICT_CANARY;
 	}
-	if (prof->whitelisted)
+	if (is_whitelisted)
 		return VERDICT_NONE;
+
+	/* Seuil : un process NON whitelisté utilise toujours le seuil PAR DÉFAUT.
+	 * On n'accorde JAMAIS un seuil élevé sur la foi du comm (falsifiable) — un
+	 * ransomware renommé « rsync » ne doit pas hériter du quota de rsync. Les
+	 * apps légitimes à fort débit doivent être whitelistées par inode (exempt). */
+	const struct profile *prof = &cfg->def;
 
 	struct pid_state *st = pidstate_get(table, pid, comm);
 	if (st->responded)

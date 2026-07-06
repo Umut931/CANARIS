@@ -75,7 +75,11 @@ static bool SendConfig(CANARIS_CFG_TYPE type, const std::wstring& path,
     cfg.Type = type;
     cfg.Enforce = enforce;
     if (!path.empty()) {
-        std::wstring dev = (type == CanarisCfgAddWhitelist) ? path : ToDevicePath(path);
+        // Whitelist ET cibles protégées sont converties en forme device
+        // (\Device\HarddiskVolumeN\...) : c'est ce que voit le driver via
+        // FLT_FILE_NAME_NORMALIZED / SeLocateProcessImageName. La whitelist se
+        // compare par CHEMIN D'IMAGE COMPLET (T2), d'où la conversion aussi.
+        std::wstring dev = ToDevicePath(path);
         size_t bytes = min(dev.size() * sizeof(wchar_t),
                            (size_t)(CANARIS_MAX_PATH * sizeof(wchar_t) - sizeof(wchar_t)));
         memcpy(cfg.Path, dev.c_str(), bytes);

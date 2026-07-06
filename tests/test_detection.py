@@ -67,12 +67,24 @@ def test_canary_access_is_immediate(profiles):
     assert v is not None and v.reason == "canary_access"
 
 
-def test_canary_access_by_whitelisted_is_allowed(profiles):
-    """Un process whitelisté (backup) accédant à un canary ne déclenche pas."""
+def test_canary_access_by_whitelisted_exe_is_allowed(profiles):
+    """Un EXÉCUTABLE whitelisté (backup rsync) accédant à un canary ne déclenche
+    pas — l'exemption est par exe, pas par comm."""
     canaries = {"/docs/RIB_2023.pdf"}
     det = Detector(profiles, canary_paths=canaries)
-    v = det.observe(Event(0.0, EV_OPEN, 9, "rsync", "/docs/RIB_2023.pdf", 0))
+    v = det.observe(Event(0.0, EV_OPEN, 9, "rsync", "/docs/RIB_2023.pdf", 0,
+                          exe="/usr/bin/rsync"))
     assert v is None
+
+
+def test_canary_access_by_comm_spoofed_rsync_is_detected(profiles):
+    """ANTI-SPOOF (T2) : comm='rsync' mais exe NON whitelisté (/tmp/evil) →
+    l'accès canary est détecté. Le comm ne protège jamais."""
+    canaries = {"/docs/RIB_2023.pdf"}
+    det = Detector(profiles, canary_paths=canaries)
+    v = det.observe(Event(0.0, EV_OPEN, 9, "rsync", "/docs/RIB_2023.pdf", 0,
+                          exe="/tmp/evil"))
+    assert v is not None and v.reason == "canary_access"
 
 
 def test_mass_delete_detection(profiles):
@@ -103,22 +115,25 @@ def test_read_then_write_pattern(profiles):
     assert fired is not None and fired.reason == "read_then_write"
 
 
-# ============================ SEUIL ADAPTATIF ===============================
-def test_adaptive_threshold_spares_whitelisted_high_io(profiles):
-    """CLAUDE.md §2.3 : un process whitelisté à fort I/O (node) ne déclenche
-    jamais, alors qu'un inconnu au même débit déclencherait."""
-    det_wl = Detector(profiles)
-    det_unknown = Detector(profiles)
-    fired_wl = fired_unknown = False
+# ==================== WHITELIST PAR EXÉCUTABLE (T2) =========================
+def test_whitelisted_exe_spared_but_comm_spoof_detected(profiles):
+    """Un EXÉCUTABLE whitelisté (/usr/bin/node) à fort I/O ne déclenche jamais,
+    alors qu'un process au MÊME comm='node' mais exe non whitelisté (spoofing)
+    déclenche au même débit. Le comm n'accorde aucun privilège."""
+    det_wl = Detector(profiles)       # exe whitelisté
+    det_spoof = Detector(profiles)    # comm='node' spoofé, exe /tmp/evil
+    fired_wl = fired_spoof = False
     for i in range(300):
-        e_wl = Event(i * 0.001, EV_OPEN, 1, "node", f"/n/f{i}", O_WRONLY)
-        e_uk = Event(i * 0.001, EV_OPEN, 2, "cryptor", f"/n/f{i}", O_WRONLY)
+        e_wl = Event(i * 0.001, EV_OPEN, 1, "node", f"/n/f{i}", O_WRONLY,
+                     exe="/usr/bin/node")
+        e_spoof = Event(i * 0.001, EV_OPEN, 2, "node", f"/n/f{i}", O_WRONLY,
+                        exe="/tmp/evil")
         if det_wl.observe(e_wl):
             fired_wl = True
-        if det_unknown.observe(e_uk):
-            fired_unknown = True
-    assert not fired_wl, "process whitelisté ne doit pas déclencher"
-    assert fired_unknown, "process inconnu au même débit doit déclencher"
+        if det_spoof.observe(e_spoof):
+            fired_spoof = True
+    assert not fired_wl, "exe whitelisté ne doit pas déclencher"
+    assert fired_spoof, "comm 'node' spoofé (exe non whitelisté) DOIT déclencher"
 
 
 def test_unknown_process_below_default_threshold_is_quiet(profiles):
