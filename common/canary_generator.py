@@ -496,11 +496,22 @@ def generate(target_dir: Path, count: int, extensions, seed=None,
     return manifest
 
 
-def write_manifest(manifest, target_dir: Path):
-    """Écrit canary_manifest.json (riche) + canary_files.txt (chemins bruts pour
-    le loader Linux `--canary-list` et le service Windows)."""
-    man_path = target_dir / "canary_manifest.json"
-    list_path = target_dir / "canary_files.txt"
+def default_control_dir() -> Path:
+    """Répertoire de contrôle par défaut, HORS de l'arbre protégé/scanné."""
+    return Path.home() / ".canaris"
+
+
+def write_manifest(manifest, control_dir: Path):
+    """Écrit canary_manifest.json (riche) + canary_files.txt (chemins bruts) dans
+    le RÉPERTOIRE DE CONTRÔLE — JAMAIS dans l'arbre protégé (T3).
+
+    Un manifeste laissé dans le dossier scanné serait une « carte au trésor » :
+    un ransomware le lirait pour éviter tous les canaries. Le répertoire de
+    contrôle est distinct (défaut ~/.canaris/), en dehors de --target-dir."""
+    control_dir = Path(control_dir)
+    control_dir.mkdir(parents=True, exist_ok=True)
+    man_path = control_dir / "canary_manifest.json"
+    list_path = control_dir / "canary_files.txt"
     with open(man_path, "w", encoding="utf-8") as f:
         json.dump({"generated_at": datetime.now().isoformat(),
                    "count": len(manifest), "canaries": manifest}, f,
@@ -508,6 +519,10 @@ def write_manifest(manifest, target_dir: Path):
     with open(list_path, "w", encoding="utf-8") as f:
         for e in manifest:
             f.write(e["path"] + "\n")
+    try:
+        os.chmod(control_dir, 0o700)  # limite l'accès au répertoire de contrôle
+    except OSError:
+        pass
     return man_path, list_path
 
 
@@ -522,6 +537,9 @@ def main(argv=None):
 
     p = argparse.ArgumentParser(description="Générateur de canary files CANARIS")
     p.add_argument("--target-dir", required=True, help="Répertoire racine cible")
+    p.add_argument("--control-dir", default=None,
+                   help="Répertoire de contrôle pour le manifeste/la liste, HORS "
+                        "de l'arbre protégé (défaut ~/.canaris/)")
     p.add_argument("--count", type=int, default=20, help="Nombre de canaries")
     p.add_argument("--extensions", default="pdf,docx,xlsx,txt",
                    help="Extensions séparées par des virgules")
@@ -529,12 +547,25 @@ def main(argv=None):
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
 
-    target = Path(args.target_dir)
+    target = Path(args.target_dir).expanduser().resolve()
+    control = Path(args.control_dir).expanduser().resolve() if args.control_dir \
+        else default_control_dir()
+    # SÉCURITÉ T3 : le répertoire de contrôle ne doit JAMAIS être sous la cible
+    # protégée (sinon le manifeste redevient une carte au trésor scannée).
+    try:
+        control.relative_to(target)
+        print(f"ERREUR: --control-dir ({control}) est sous --target-dir ({target}). "
+              f"Le manifeste serait exposé au ransomware. Choisissez un dossier séparé.")
+        return 2
+    except ValueError:
+        pass
+
     exts = args.extensions.split(",")
     print(f"CANARIS — génération de {args.count} canary(s) dans {target}")
+    print(f"          manifeste/liste dans le contrôle : {control}")
     manifest = generate(target, args.count, exts, seed=args.seed,
                         verbose=not args.quiet)
-    man_path, list_path = write_manifest(manifest, target)
+    man_path, list_path = write_manifest(manifest, control)
     total = sum(e["size"] for e in manifest)
     avg_ent = sum(e["entropy_bits_per_byte"] for e in manifest) / max(len(manifest), 1)
     n_high = sum(1 for e in manifest if e["entropy_bits_per_byte"] >= 6.0)

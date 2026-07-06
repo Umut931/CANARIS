@@ -24,17 +24,22 @@ say "0. Build (si nécessaire)"
 [ -x "$ROOT/linux/canaris" ] || make -C "$ROOT/linux"
 
 say "1. Nettoyage + génération de canaries réalistes dans la sandbox"
-rm -rf "$SANDBOX" "$LOG"; mkdir -p "$SANDBOX"
-python3 "$ROOT/common/canary_generator.py" --target-dir "$SANDBOX" --count 15 --seed 7 --quiet
+CONTROL="$ROOT/tests/sandbox/.control"     # HORS de l'arbre protégé (T3)
+rm -rf "$SANDBOX" "$LOG" "$CONTROL"; mkdir -p "$SANDBOX" "$CONTROL"
+python3 "$ROOT/common/canary_generator.py" --target-dir "$SANDBOX" \
+    --control-dir "$CONTROL" --count 15 --seed 7 --quiet
 echo "Canaries générés :"; find "$SANDBOX" -type f | head -5
+echo "Manifeste HORS arbre protégé : $CONTROL/canary_files.txt"
 
 say "2. Chargement du moteur noyau CANARIS (protège la sandbox)"
 "$ROOT/linux/canaris" \
     --protect "$SANDBOX" \
-    --canary-list "$SANDBOX/canary_files.txt" \
+    --canary-list "$CONTROL/canary_files.txt" \
     --whitelist "$ROOT/config/whitelist.txt" \
     --thresholds "$ROOT/config/thresholds.conf" \
     --snapshot-root "$SNAPS" \
+    --baseline-root "$ROOT/baselines" \
+    --baseline-interval 30 \
     --log "$LOG" \
     --quiet &
 CANARIS_PID=$!
@@ -49,9 +54,14 @@ sleep 2
 say "4. Résultat : journal de détection/réponse"
 cat "$LOG" 2>/dev/null || echo "(aucun log — LSM a peut-être tout bloqué)"
 
-say "5. Snapshot de préservation créé"
-ls -1 "$SNAPS" 2>/dev/null | tail -1 | while read -r s; do
-    echo "snapshots/$s : $(find "$SNAPS/$s" -type f | wc -l) fichiers préservés"
-done
+say "5. Préservation : baseline PROPRE (pris avant l'attaque)"
+BL=$(ls -d "$ROOT"/baselines/baseline-* 2>/dev/null | tail -1)
+if [ -n "$BL" ]; then
+    echo "Dernier baseline : $BL"
+    echo "  fichiers propres préservés : $(find "$BL" -type f | wc -l)"
+    echo "  fichiers chiffrés dedans (doit être 0) : $(find "$BL" -name '*.CANARIS_LOCKED' | wc -l)"
+    echo "  -> RESTAURATION possible depuis ce baseline (contenu original)."
+fi
+echo "(Le snapshot post-incident est FORENSIQUE, pas une source de restauration.)"
 
 say "Démo terminée. (Ctrl-C déjà géré ; CANARIS s'arrête.)"

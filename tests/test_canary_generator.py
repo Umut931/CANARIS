@@ -152,15 +152,37 @@ def test_names_are_credible(generated):
         assert len(rel.parts) >= 3, f"{rel} pas assez profond (F1.5)"
 
 
-def test_manifest_and_list_written(generated, tmp_path):
-    """Le manifeste JSON et la liste de chemins (pour le loader) sont produits."""
-    target, manifest = generated
-    man_path, list_path = cg.write_manifest(manifest, target)
+def test_manifest_and_list_written_to_control_dir(generated, tmp_path):
+    """Le manifeste JSON et la liste de chemins sont produits dans le répertoire
+    de CONTRÔLE (fourni), pas dans la cible."""
+    _, manifest = generated
+    control = tmp_path / "control"
+    man_path, list_path = cg.write_manifest(manifest, control)
     assert man_path.exists() and list_path.exists()
+    assert man_path.parent == control
     lines = list_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == len(manifest)
     for line in lines:
         assert Path(line).exists()
+
+
+def test_manifest_NOT_in_protected_tree(generated):
+    """T3 : APRÈS génération, l'arbre protégé (target) ne contient AUCUN fichier
+    manifeste/liste — sinon un ransomware l'utiliserait pour éviter les canaries."""
+    target, _ = generated
+    leaked = [p for p in target.rglob("*")
+              if p.name in ("canary_manifest.json", "canary_files.txt")]
+    assert leaked == [], f"carte au trésor exposée dans l'arbre protégé: {leaked}"
+
+
+def test_control_dir_inside_target_is_rejected(tmp_path):
+    """Le CLI refuse un --control-dir situé sous --target-dir."""
+    target = tmp_path / "docs"
+    target.mkdir()
+    rc = cg.main(["--target-dir", str(target),
+                  "--control-dir", str(target / "sub"),
+                  "--count", "1", "--quiet"])
+    assert rc == 2
 
 
 def test_rejects_unsupported_extension(tmp_path):
