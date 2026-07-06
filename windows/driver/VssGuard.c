@@ -36,16 +36,29 @@ VssGuardCreateProcessNotify(_Inout_ PEPROCESS Process, _In_ HANDLE ProcessId,
     if (CreateInfo == NULL)
         return;
 
-    const WCHAR *image = (CreateInfo->ImageFileName &&
-                          CreateInfo->ImageFileName->Buffer)
-                         ? CreateInfo->ImageFileName->Buffer : L"";
-    const WCHAR *cmd = (CreateInfo->CommandLine &&
-                        CreateInfo->CommandLine->Buffer)
-                       ? CreateInfo->CommandLine->Buffer : L"";
+    // Les UNICODE_STRING ne sont PAS garanties nul-terminées : on en fait des
+    // copies bornées et nul-terminées sur la pile (évite tout dépassement de
+    // lecture dans le classifieur qui s'appuie sur wcslen).
+    #define VG_IMG_MAX  260
+    #define VG_CMD_MAX  1024
+    WCHAR image[VG_IMG_MAX];
+    WCHAR cmd[VG_CMD_MAX];
+    image[0] = L'\0';
+    cmd[0]   = L'\0';
 
-    // NB : les UNICODE_STRING ici ne sont pas garanties nul-terminées ; on
-    // s'appuie sur vssguard_rules qui borne via wcslen sur des buffers fournis
-    // par le kernel (terminés) — en pratique ImageFileName/CommandLine le sont.
+    if (CreateInfo->ImageFileName && CreateInfo->ImageFileName->Buffer) {
+        USHORT n = CreateInfo->ImageFileName->Length / sizeof(WCHAR);
+        if (n > VG_IMG_MAX - 1) n = VG_IMG_MAX - 1;
+        RtlCopyMemory(image, CreateInfo->ImageFileName->Buffer, n * sizeof(WCHAR));
+        image[n] = L'\0';
+    }
+    if (CreateInfo->CommandLine && CreateInfo->CommandLine->Buffer) {
+        USHORT n = CreateInfo->CommandLine->Length / sizeof(WCHAR);
+        if (n > VG_CMD_MAX - 1) n = VG_CMD_MAX - 1;
+        RtlCopyMemory(cmd, CreateInfo->CommandLine->Buffer, n * sizeof(WCHAR));
+        cmd[n] = L'\0';
+    }
+
     vg_verdict v = vssguard_classify(image, cmd);
     if (v == VG_NONE)
         return;
