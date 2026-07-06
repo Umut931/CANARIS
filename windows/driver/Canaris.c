@@ -22,6 +22,7 @@
 #include <fltKernel.h>
 #include <dontuse.h>
 #include "Canaris.h"
+#include "Canaris_internal.h"
 
 //
 // -------------------------------------------------------------- globals ----
@@ -182,9 +183,10 @@ static BOOLEAN CanarisIsWhitelisted(VOID)
 
 //
 // Notifie le service (kill + snapshot). Best-effort, non bloquant.
+// Non statique : aussi appelée par VssGuard.c (voir Canaris_internal.h).
 //
-static VOID CanarisNotify(_In_ CANARIS_EVENT_TYPE Type, _In_ ULONG Op,
-                          _In_ PUNICODE_STRING Path)
+VOID CanarisNotify(_In_ CANARIS_EVENT_TYPE Type, _In_ ULONG Op,
+                   _In_ PUNICODE_STRING Path)
 {
     CANARIS_NOTIFY_MSG msg;
     LARGE_INTEGER timeout;
@@ -448,6 +450,8 @@ CanarisUnload(FLT_FILTER_UNLOAD_FLAGS Flags)
 {
     UNREFERENCED_PARAMETER(Flags);
 
+    VssGuardUnregister();
+
     if (gServerPort)
         FltCloseCommunicationPort(gServerPort);
 
@@ -500,6 +504,11 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
         FltCloseCommunicationPort(gServerPort);
         goto fail;
     }
+
+    // VssGuard : surveillance des créations de process (vssadmin/wmic/bcdedit).
+    // Échec non fatal : le minifilter reste opérationnel sans VssGuard.
+    (VOID)VssGuardRegister();
+
     return STATUS_SUCCESS;
 
 fail:

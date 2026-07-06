@@ -190,4 +190,39 @@ correcte ; l'`echec` du E2E conteneurisé n'était que l'artefact de namespace.
 **[HANDOFF]** sur VM bare-metal (HANDOFF.md T-L5) — mais chaque maillon est
 prouvé ici séparément.
 
+## Phase 6 — VssGuard — ✅ LOGIQUE VALIDÉE / ⚠️ DRIVER = HANDOFF
+
+### Matching des command-lines (C portable + Python) ✅
+
+La logique de `windows/driver/vssguard_rules.h` est compilée avec gcc et testée :
+
+```
+$ make -C tests/ctest        # test_vssguard
+  OK vssadmin delete shadows        OK wmic shadowcopy delete
+  OK vssadmin resize shadowstorage  OK bcdedit recoveryenabled no
+  OK bcdedit bootstatuspolicy ...   OK wbadmin delete catalog
+  OK powershell win32_shadowcopy remove
+  OK ... (5 commandes bénignes non signalées)
+```
+
+Miroir Python testé identiquement :
+```
+$ python -m pytest tests/test_vssguard_parsing.py -q   → 19 passed
+```
+Couvre vrais positifs (vssadmin/wmic/bcdedit/wbadmin/powershell) ET vrais
+négatifs (list shadows, /enum, get status, git mentionnant « shadow »).
+
+### Driver (PsSetCreateProcessNotifyRoutineEx) — ⚠️ [HANDOFF-WIN-WDK] T-W5
+
+`windows/driver/VssGuard.c` bloque la création du processus destructeur
+(`CreationStatus = STATUS_ACCESS_DENIED`) + alerte priorité maximale. Revue
+statique OK ; test réel = VM (`vssadmin delete shadows /all` → alerte).
+
+### Linux (F5.3) ✅ mécanisme
+
+Le répertoire de snapshots est **auto-protégé** par le loader : toute tentative
+de suppression y est bloquée/détectée par le hook LSM `inode_unlink` (comme un
+dossier protégé). `cp`/`rsync` du responder sont whitelistés pour éviter
+l'auto-blocage.
+
 <!-- Les phases suivantes ajoutent leurs preuves ici. -->

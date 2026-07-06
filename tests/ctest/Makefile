@@ -5,7 +5,8 @@
 #
 CC      ?= cc
 US      := ../../linux/userspace
-CFLAGS  := -g -O2 -Wall -I$(US)
+WINDRV  := ../../windows/driver
+CFLAGS  := -g -O2 -Wall -I$(US) -I$(WINDRV)
 
 .PHONY: all run clean
 all: run
@@ -16,9 +17,13 @@ test_detector: test_detector.c $(US)/profiles.c
 test_responder: test_responder.c $(US)/responder.c
 	$(CC) $(CFLAGS) $^ -o $@
 
-run: test_detector test_responder
+test_vssguard: test_vssguard.c $(WINDRV)/vssguard_rules.h
+	$(CC) $(CFLAGS) test_vssguard.c -o $@
+
+run: test_detector test_responder test_vssguard
 	@echo "--- test_detector ---"  && ./test_detector
 	@echo "--- test_responder ---" && ./test_responder
+	@echo "--- test_vssguard ---"  && ./test_vssguard
 
 clean:
-	rm -f test_detector test_responder
+	rm -f test_detector test_responder test_vssguard

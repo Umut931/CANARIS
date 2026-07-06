@@ -21,6 +21,8 @@ git-remote-http
 # git-remote-https est tronqué à 15 car -> "git-remote-http"
 # --- Backup / sync (dont notre propre moteur de snapshot) ---
 rsync
+# cp : repli du responder quand rsync est absent (écrit dans snapshots/ protégé)
+cp
 # --- IDE ---
 code
 # --- Le responder CANARIS lui-même (ne jamais s'auto-bloquer) ---

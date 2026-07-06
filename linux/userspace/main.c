@@ -435,6 +435,12 @@ int main(int argc, char **argv)
 	if (err)
 		return err;
 
+	/* Auto-protège le répertoire de snapshots contre la suppression (cahier
+	 * F5.3) : une tentative d'effacer nos sauvegardes est bloquée/détectée par
+	 * le hook LSM inode_unlink, comme n'importe quel dossier protégé. */
+	if (env.n_protect < MAX_PROTECT_DIRS)
+		env.protect_dirs[env.n_protect++] = env.snapshot_root;
+
 	libbpf_set_print(libbpf_print_fn);
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
