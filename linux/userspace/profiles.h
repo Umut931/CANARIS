@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
-/* CANARIS — détection comportementale à seuil adaptatif (Phase 4).
+/* CANARIS — détection comportementale : profils curatés par processus (Phase 4).
  *
  * Reproduit en C l'algorithme de common/canaris_engine.py (référence testée).
- * Charge les profils depuis config/thresholds.conf (dérivé de profiles.json par
- * common/profiles_compile.py), maintient un compteur d'I/O par PID sur fenêtre
- * glissante (tumbling window {count, window_start} — cf. CLAUDE.md §5) et
- * applique un seuil ADAPTATIF par profil de processus (jamais un seuil global
- * fixe, sauf secours par défaut).
+ * Charge le seuil PAR DÉFAUT depuis config/thresholds.conf (dérivé de
+ * profiles.json par common/profiles_compile.py), maintient un compteur d'I/O
+ * par PID sur fenêtre glissante (tumbling window {count, window_start} — cf.
+ * CLAUDE.md §5). L'exemption des apps de confiance se fait par la WHITELIST
+ * d'exécutables (par inode), pas par un seuil élevé accordé au comm. Profils
+ * STATIQUES curatés, pas une baseline apprise (docs/LIMITATIONS.md).
  */
 #ifndef CANARIS_PROFILES_H
 #define CANARIS_PROFILES_H

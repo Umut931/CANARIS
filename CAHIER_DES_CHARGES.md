@@ -122,7 +122,7 @@ CANARIS repose sur **trois piliers** déclinés sur chaque OS :
 | Réf | Exigence | Priorité |
 |---|---|---|
 | F3.1 | Compteur d'I/O par PID sur fenêtre glissante (défaut 2 s) | Haute |
-| F3.2 | **Seuil adaptatif par profil de processus** (baseline calibrée, pas de seuil global fixe) | Haute |
+| F3.2 | **Profils curatés par processus** (seuil par défaut + whitelist d'exécutables par inode ; PAS de baseline apprise — voir docs/LIMITATIONS.md §4bis) | Haute |
 | F3.3 | Détection du pattern read-then-write sur les mêmes fichiers | Moyenne |
 | F3.4 | Détection de suppression massive de fichiers | Moyenne |
 | F3.5 | Détection de la suppression de shadow copies / sauvegardes (signal prioritaire, indépendant du seuil I/O) | Haute |

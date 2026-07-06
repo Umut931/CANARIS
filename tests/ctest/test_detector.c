@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Test unitaire C de la détection à seuil adaptatif (linux/userspace/profiles.c).
+/* Test unitaire C de la détection (profils curatés, linux/userspace/profiles.c).
  * Valide l'algorithme réel (pas un miroir Python) en dehors du chemin eBPF.
  *
  * Build/run : voir tests/ctest/Makefile (compile avec profiles.c, sans libbpf).

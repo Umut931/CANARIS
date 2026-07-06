@@ -33,12 +33,33 @@ chiffrer N fichiers avant d'être tué. Mitigations : (a) blocage **synchrone**
 LSM/minifilter dès le 1er accès **canary** — ne dépend pas de l'userspace ;
 (b) **snapshot avant kill**. Mesuré : cf. `docs/VALIDATION.md` (Phase 4).
 
-## 4. Whitelist par nom de processus (`comm`) — falsifiable
+## 4. Whitelist par EXÉCUTABLE (inode) — pas par nom (durci T2)
 
-La whitelist Linux compare le `comm` (15 car.), falsifiable : un binaire malveillant
-nommé `rsync` serait exempté. Idem, la whitelist Windows compare un suffixe de
-chemin d'exécutable (plus robuste mais contournable par copie). **Durcissement
-prévu** : identifier l'exécutable par son **inode**/hash, pas son nom.
+L'exemption est décidée par l'**identité de l'exécutable** : (device, inode) du
+binaire côté Linux (`task->mm->exe_file`), chemin d'image complet normalisé côté
+Windows. Le `comm`/`argv[0]` (falsifiable via `prctl`) n'accorde **aucun**
+privilège, et un process non whitelisté garde **toujours le seuil par défaut**
+(un ransomware renommé `rsync` n'hérite ni de l'exemption ni d'un quota élevé —
+prouvé par les tests anti-spoof, `docs/VALIDATION.md`).
+
+**Limite résiduelle** : un attaquant qui parvient à **remplacer** le binaire
+whitelisté lui-même (même inode) hériterait de l'exemption. Le durcissement ultime
+serait une vérification **Authenticode / hash signé** du binaire à chaque décision
+(hors scope — coût de perf + gestion des certificats ; noté dans
+`windows/REVIEW_NOTES.md`). Le calcul de l'inode d'exe à chaque événement ajoute
+aussi un léger surcoût (à mesurer, cf. R8).
+
+## 4bis. Profils STATIQUES curatés — pas une baseline apprise
+
+Ce que le cahier appelle « seuil adaptatif par processus » est, dans
+l'implémentation, un ensemble **statique curaté** : une whitelist d'exécutables de
+confiance + un **seuil par défaut unique**. Ce n'est **pas** une baseline apprise
+par utilisateur/processus (pas de ML). C'est un **choix d'ingénierie assumé** :
+prévisible, auditable, sans dérive ni empoisonnement d'apprentissage, et sans le
+risque de faux négatifs d'un modèle mal calibré. Une vraie détection adaptative
+(apprentissage de baseline d'I/O par processus, percentiles glissants) est un
+**travail futur** identifié, pas une fonctionnalité présente. Le terme
+« adaptatif » du cahier est donc à lire comme « profils curatés par processus ».
 
 ## 5. btime non modifiable sous Linux
 

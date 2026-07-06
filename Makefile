@@ -35,7 +35,7 @@ test-canary:
 	$(PYTHON) -m pytest tests/test_canary_generator.py -v
 
 test-detection:
-	@echo "==> Tests logique de détection (seuil adaptatif, compteur I/O)..."
+	@echo "==> Tests logique de détection (profils curatés, compteur I/O)..."
 	$(PYTHON) -m pytest tests/test_detection.py -v
 
 test-vssguard:

@@ -26,10 +26,10 @@ copies en préambule. **Pas** de 0-day noyau, pas d'accès hyperviseur.
 | Menace | Mécanisme CANARIS | OS |
 |---|---|---|
 | Chiffrement de fichiers utilisateur | canary files + blocage LSM/minifilter au 1er accès | Lin/Win |
-| Balayage rapide d'un dossier | seuil adaptatif scopé aux zones protégées → kill + snapshot | Lin/Win |
+| Balayage rapide d'un dossier | seuil (profils curatés) scopé aux zones protégées → kill + snapshot | Lin/Win |
 | Renommage `.locked` / suppression de l'original | `lsm/inode_rename` + `inode_unlink` / `IRP_MJ_SET_INFORMATION` | Lin/Win |
 | Suppression des shadow copies / sauvegardes | VssGuard (process-creation) → alerte max + blocage ; auto-protection snapshots | Win / Lin |
-| Faux positifs (npm, git, OneDrive, Defender) | seuil **adaptatif** par profil + whitelist | Lin/Win |
+| Faux positifs (npm, git, OneDrive, Defender) | seuil par défaut + **whitelist d'exécutables par inode** | Lin/Win |
 | Perte de données pendant la réponse | snapshot **avant** le kill (préservation d'abord) | Lin/Win |
 
 ## 4. Ce qui N'EST PAS couvert (hors périmètre, cahier §2.2)

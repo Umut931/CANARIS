@@ -14,8 +14,10 @@ Ce module implémente l'algorithme de détection (Phase 4) et sert à la fois :
     ce qui reste une mitigation efficace (kill dès le 1er accès canary).
 
 Décisions clés (CLAUDE.md §2.3, cahier F3) :
-  * **seuil ADAPTATIF par profil de processus** — jamais un seuil global fixe
-    (celui-ci n'existe que comme secours pour les process inconnus) ;
+  * **profils CURATÉS par processus** — une whitelist d'EXÉCUTABLES de confiance
+    (par inode, jamais par comm) + un seuil PAR DÉFAUT unique. Ce ne sont PAS des
+    baselines apprises (pas de ML) : choix assumé, robuste et prévisible
+    (docs/LIMITATIONS.md). Un process non whitelisté garde le seuil par défaut ;
   * un **accès canary** par un process non whitelisté déclenche la réponse
     IMMÉDIATEMENT (indépendamment de tout seuil — cahier §12, mitige la race
     condition du chiffrement rapide) ;
@@ -81,7 +83,8 @@ class _PidState:
 
 
 class Profiles:
-    """Charge et interroge les profils de seuil adaptatif (config/profiles.json)."""
+    """Charge les profils curatés par processus (config/profiles.json) : whitelist
+    d'exécutables + seuil par défaut. PAS de baseline apprise (cf. LIMITATIONS)."""
 
     def __init__(self, config: dict, extra_whitelist=None):
         self.default = config.get("default", {"window_seconds": 2.0, "io_threshold": 60})
@@ -125,7 +128,7 @@ class Profiles:
 
 
 class Detector:
-    """Détecteur comportemental à fenêtre glissante et seuil adaptatif.
+    """Détecteur comportemental à fenêtre glissante et profils curatés.
 
     Alimenter avec `observe(event)`. Renvoie un `Verdict` la première fois
     qu'un processus franchit un signal de détection, sinon None.

@@ -4,7 +4,8 @@
 Reproduit le *pattern d'I/O* de logiciels légitimes qui, avec un seuil fixe
 naïf, provoqueraient des faux positifs catastrophiques (CLAUDE.md §2.3,
 cahier NF5) : npm install, git clone volumineux, synchronisation OneDrive,
-scan Defender. Le seuil adaptatif + la whitelist doivent produire **zéro**
+scan Defender. La whitelist d'exécutables (par inode) + le seuil par défaut
+doivent produire **zéro**
 réaction sur ces charges.
 """
 from __future__ import annotations

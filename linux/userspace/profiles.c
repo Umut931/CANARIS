@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-/* CANARIS — implémentation de la détection à seuil adaptatif (Phase 4). */
+/* CANARIS — détection : profils curatés par processus + seuil par défaut (Phase 4).
+ * NB : profils STATIQUES curatés, pas une baseline apprise (docs/LIMITATIONS.md). */
 #include "profiles.h"
 
 #include <stdio.h>

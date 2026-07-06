@@ -3,7 +3,8 @@
 
 Rejoue des charges de travail LÉGITIMES (npm install, git clone, OneDrive,
 sauvegarde d'éditeur) dans le moteur de détection et exige **zéro** réaction.
-C'est la preuve que le seuil adaptatif + whitelist évitent les faux positifs
+C'est la preuve que la whitelist d'exécutables (par inode) + le seuil par défaut
+évitent les faux positifs
 catastrophiques d'un seuil global fixe.
 
     python -m pytest tests/falsepositive/test_false_positives.py -v

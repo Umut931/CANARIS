@@ -214,6 +214,6 @@ Ces tests **sont** lancés dans l'environnement de dev (Python) — voir `tests/
 - ✅ Distribution des tailles ∈ [50 Ko, 5 Mo]
 - ✅ Magic bytes corrects par extension
 - ✅ mtime modifié dans le passé
-- ✅ Logique de détection (compteur I/O, seuil adaptatif) sur traces simulées
+- ✅ Logique de détection (compteur I/O, profils curatés par processus) sur traces simulées
 - ✅ Parsing des command-lines VssGuard (vssadmin/wmic/bcdedit)
 - ✅ Faux positifs = 0 sur workloads simulés (npm install, git clone, OneDrive)

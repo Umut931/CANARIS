@@ -131,7 +131,7 @@ $ python -m pytest tests/test_detection.py tests/falsepositive/ -q
 ................                                     16 passed
 ```
 Couvre : rafale ransomware → détection précoce ; accès canary immédiat ;
-suppression massive ; read-then-write ; **seuil adaptatif** (node whitelisté à
+suppression massive ; read-then-write ; **profils curatés par processus** (exe whitelisté à
 fort débit ne déclenche pas, inconnu au même débit déclenche) ; responder
 snapshot+kill d'un vrai sous-processus en < 500 ms (NF2) ; journalisation.
 
