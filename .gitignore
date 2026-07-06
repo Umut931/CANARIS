@@ -48,5 +48,9 @@ venv/
 .DS_Store
 Thumbs.db
 
+# ---- Compiled C test binaries (no extension) ----
+tests/ctest/test_detector
+tests/ctest/test_responder
+
 # ---- Generated canary manifests (regenerable) ----
 canary_manifest.json

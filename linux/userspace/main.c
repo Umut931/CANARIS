@@ -24,6 +24,8 @@
 
 #include "canaris.skel.h"
 #include "../bpf/canaris.h"
+#include "profiles.h"
+#include "responder.h"
 
 #define MAX_PROTECT_DIRS 64
 #define MAX_CANARY_ARGS  256
@@ -38,11 +40,77 @@ static struct {
 	int         n_protect;
 	const char *canaries[MAX_CANARY_ARGS];
 	int         n_canaries;
+	const char *thresholds_path;
+	const char *snapshot_root;
+	const char *log_path;
+	int         json;
+	int         dry_run;
 	int         verbose;
 	int         enforce;
 } env = {
+	.thresholds_path = "config/thresholds.conf",
+	.snapshot_root   = "snapshots",
+	.log_path        = "canaris_events.log",
 	.enforce = 1,
 };
+
+/* Liste userspace des chemins canaries (pour le matching en mode dégradé). */
+static char **g_canaries;
+static int    g_ncanaries;
+static int    g_cap_canaries;
+
+static void canary_list_add(const char *path)
+{
+	if (g_ncanaries >= g_cap_canaries) {
+		int ncap = g_cap_canaries ? g_cap_canaries * 2 : 64;
+		char **n = realloc(g_canaries, ncap * sizeof(char *));
+		if (!n)
+			return;
+		g_canaries = n;
+		g_cap_canaries = ncap;
+	}
+	g_canaries[g_ncanaries++] = strdup(path);
+}
+
+/* Contexte applicatif passé à la boucle d'événements (détection + réponse). */
+struct app_ctx {
+	struct profiles_config *cfg;
+	struct pid_state       *table;
+	struct responder       *resp;
+	const char            **protect;
+	int                     n_protect;
+	char                  **canaries;
+	int                     n_canaries;
+	int                     json;
+};
+
+/* Le chemin est-il sous un dossier protégé ? (scoping de la détection I/O :
+ * on ne compte QUE les accès aux zones protégées, jamais le bruit système —
+ * évite les faux positifs catastrophiques, CLAUDE.md §2.3). */
+static int path_under_protected(const struct app_ctx *app, const char *path)
+{
+	if (!path || !path[0])
+		return 0;
+	for (int i = 0; i < app->n_protect; i++) {
+		const char *d = app->protect[i];
+		size_t len = strlen(d);
+		if (strncmp(path, d, len) == 0 && (path[len] == '/' || path[len] == '\0'))
+			return 1;
+	}
+	return 0;
+}
+
+/* Le chemin correspond-il exactement à un canary connu ? (déclenche la réponse
+ * immédiate en mode dégradé, sans attendre le LSM). */
+static int path_is_canary(const struct app_ctx *app, const char *path)
+{
+	if (!path || !path[0])
+		return 0;
+	for (int i = 0; i < app->n_canaries; i++)
+		if (strcmp(path, app->canaries[i]) == 0)
+			return 1;
+	return 0;
+}
 
 /* ------------------------------------------------------------- argp ------ */
 
@@ -60,6 +128,11 @@ static const struct argp_option opts[] = {
 	{ "whitelist",   'w', "FILE", 0, "Liste de process de confiance (1 comm/ligne)" },
 	{ "canary",      OPT_CANARY,      "PATH", 0, "Fichier canary (répétable)" },
 	{ "canary-list", OPT_CANARY_LIST, "FILE", 0, "Liste de canaries (1 chemin/ligne)" },
+	{ "thresholds",  't', "FILE", 0, "Seuils adaptatifs (config/thresholds.conf)" },
+	{ "snapshot-root", 's', "DIR", 0, "Racine des snapshots (défaut snapshots/)" },
+	{ "log",         'l', "FILE", 0, "Journal des réponses" },
+	{ "json",        'j', NULL,   0, "Émettre les événements en JSON (mode dégradé)" },
+	{ "dry-run",     'd', NULL,   0, "Ne pas tuer/snapshotter réellement (test)" },
 	{ "observe",     'o', NULL,   0, "Observation seule (LSM ne bloque pas)" },
 	{ "verbose",     'v', NULL,   0, "Sortie détaillée (logs libbpf)" },
 	{ 0 },
@@ -79,6 +152,11 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.canaries[env.n_canaries++] = arg;
 		break;
 	case OPT_CANARY_LIST: env.canary_list_path = arg; break;
+	case 't': env.thresholds_path = arg; break;
+	case 's': env.snapshot_root = arg; break;
+	case 'l': env.log_path = arg; break;
+	case 'j': env.json = 1; break;
+	case 'd': env.dry_run = 1; break;
 	case 'o': env.enforce = 0; break;
 	case 'v': env.verbose = 1; break;
 	default:  return ARGP_ERR_UNKNOWN;
@@ -200,7 +278,10 @@ static int wl_cb(struct canaris_bpf *skel, const char *name)
 }
 static int canary_cb(struct canaris_bpf *skel, const char *path)
 {
-	return add_protected(skel, path, 1 /*canary*/, 0);
+	int r = add_protected(skel, path, 1 /*canary*/, 0);
+	if (r == 0)
+		canary_list_add(path);   /* aussi côté userspace (mode dégradé) */
+	return r;
 }
 
 static int setup_maps(struct canaris_bpf *skel)
@@ -212,8 +293,10 @@ static int setup_maps(struct canaris_bpf *skel)
 			have_dirs = 1;
 
 	for (int i = 0; i < env.n_canaries; i++)
-		if (add_protected(skel, env.canaries[i], 1, 0) == 0)
+		if (add_protected(skel, env.canaries[i], 1, 0) == 0) {
+			canary_list_add(env.canaries[i]);
 			n_can++;
+		}
 
 	if (env.canary_list_path) {
 		int r = foreach_line(env.canary_list_path, canary_cb, skel);
@@ -257,12 +340,38 @@ static const char *type_str(__u32 t)
 	}
 }
 
+static const char *reason_str(enum verdict_reason r)
+{
+	switch (r) {
+	case VERDICT_CANARY:      return "canary_access";
+	case VERDICT_IO_RATE:     return "io_rate";
+	case VERDICT_MASS_DELETE: return "mass_delete";
+	default:                  return "none";
+	}
+}
+
+static void emit_json(const struct canaris_event *e)
+{
+	/* Ligne JSON pour le moteur userspace (common/canaris_engine.py). */
+	printf("{\"ts\":%.6f,\"type\":\"%s\",\"pid\":%u,\"comm\":\"%s\","
+	       "\"path\":\"%s\",\"flags\":%u}\n",
+	       e->timestamp_ns / 1e9,
+	       type_str(e->event_type), e->tgid, e->comm,
+	       e->filename, e->flags);
+	fflush(stdout);
+}
+
 static int handle_event(void *ctx, void *data, size_t sz)
 {
-	(void)ctx;
+	struct app_ctx *app = ctx;
 	if (sz < sizeof(struct canaris_event))
 		return 0;
 	const struct canaris_event *e = data;
+
+	if (app && app->json) {
+		emit_json(e);
+		return 0;
+	}
 
 	char ts[16];
 	time_t now = time(NULL);
@@ -283,6 +392,33 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	} else {
 		printf("%s %s pid=%-7u comm=%-16s %s\n",
 		       ts, type_str(e->event_type), e->tgid, e->comm, e->filename);
+	}
+
+	/* --- Détection comportementale + réponse (Phase 4) --- */
+	if (app && app->cfg && app->table) {
+		int lsm_decision = (e->event_type == EVENT_CANARY_HIT ||
+				    e->event_type == EVENT_BLOCKED);
+		int under = path_under_protected(app, e->filename);
+		int canary = (e->event_type == EVENT_CANARY_HIT) ||
+			     path_is_canary(app, e->filename);
+
+		/* SCOPING : ne compter que les accès aux zones protégées (ou les
+		 * décisions LSM déjà scopées). Le bruit système (dockerd, etc.)
+		 * qui ne touche pas les zones protégées est ignoré. */
+		int relevant = lsm_decision || under || canary;
+		if (relevant) {
+			int is_unlink = (e->event_type == EVENT_UNLINK);
+			double t = e->timestamp_ns / 1e9;
+			char detail[128];
+			enum verdict_reason v = detector_observe(app->cfg, app->table,
+				e->tgid, e->comm, t, canary, is_unlink,
+				detail, sizeof(detail));
+			if (v != VERDICT_NONE && app->resp) {
+				responder_respond(app->resp, e->tgid, e->comm,
+						  reason_str(v), detail,
+						  app->protect, app->n_protect);
+			}
+		}
 	}
 	return 0;
 }
@@ -345,20 +481,50 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
+	/* Résout les dossiers protégés en chemins absolus (matching de préfixe
+	 * fiable côté userspace, quel que soit le CWD du process observé). */
+	static char *protect_resolved[MAX_PROTECT_DIRS];
+	for (int i = 0; i < env.n_protect; i++) {
+		char *rp = realpath(env.protect_dirs[i], NULL);
+		protect_resolved[i] = rp ? rp : (char *)env.protect_dirs[i];
+	}
+
+	/* Détection comportementale + responder (Phase 4). */
+	struct profiles_config prof_cfg;
+	profiles_load(&prof_cfg, env.thresholds_path);
+	struct pid_state *pidtable = pidstate_table_new();
+	struct responder resp;
+	responder_init(&resp, env.snapshot_root, env.log_path, env.dry_run);
+
+	struct app_ctx app = {
+		.cfg = &prof_cfg,
+		.table = pidtable,
+		.resp = &resp,
+		.protect = (const char **)protect_resolved,
+		.n_protect = env.n_protect,
+		.canaries = g_canaries,
+		.n_canaries = g_ncanaries,
+		.json = env.json,
+	};
+
+	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, &app, NULL);
 	if (!rb) {
 		fprintf(stderr, "échec création ring buffer\n");
 		err = 1;
+		pidstate_table_free(pidtable);
 		goto cleanup;
 	}
 
-	printf("CANARIS chargé (mode=%s%s). Ctrl-C pour arrêter.\n",
-	       env.enforce ? "ENFORCE (blocage -EPERM via LSM BPF)" : "observe",
-	       (!lsm_ok) ? " — LSM bpf indisponible, blocage délégué au responder" : "");
-	printf("%-8s %-6s %-11s %-16s %s\n", "HEURE", "TYPE", "PID", "COMM", "CIBLE");
+	if (!env.json) {
+		printf("CANARIS chargé (mode=%s%s). rsync=%s. Ctrl-C pour arrêter.\n",
+		       env.enforce ? "ENFORCE (blocage -EPERM via LSM BPF)" : "observe",
+		       (!lsm_ok) ? " — LSM bpf indisponible, blocage délégué au responder" : "",
+		       resp.have_rsync ? "oui" : "non (repli cp -a)");
+		printf("%-8s %-6s %-11s %-16s %s\n", "HEURE", "TYPE", "PID", "COMM", "CIBLE");
+	}
 
 	while (!exiting) {
-		err = ring_buffer__poll(rb, 200 /* ms */);
+		err = ring_buffer__poll(rb, 50 /* ms */);
 		if (err == -EINTR) { err = 0; break; }
 		if (err < 0) {
 			fprintf(stderr, "erreur poll ring buffer: %d\n", err);
@@ -367,6 +533,7 @@ int main(int argc, char **argv)
 	}
 
 	printf("\nArrêt de CANARIS.\n");
+	pidstate_table_free(pidtable);
 
 cleanup:
 	ring_buffer__free(rb);

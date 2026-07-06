@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         zlib1g-dev \
         pkg-config \
         ca-certificates \
+        rsync \
+        python3 \
     && rm -rf /var/lib/apt/lists/* \
     # Le paquet fournit bpftool sous /usr/lib/linux-tools/<ver>/ ; le wrapper
     # /usr/sbin/bpftool dépend de `uname -r` (= kernel hôte dans un conteneur),
