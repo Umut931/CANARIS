@@ -19,6 +19,28 @@ Convention :
 
 ---
 
+## ⭐ VALIDATIONS BLOQUANTES (crédibilité du projet)
+
+Deux mécanismes portent la thèse sécurité et **n'ont pas pu être exécutés** dans
+l'environnement de dev. Harnais turnkey fournis (verdict PASS/FAIL, preuve
+horodatée dans `vm/evidence/`) ; ils **refusent de rapporter PASS** hors du bon
+environnement :
+
+```bash
+# 1) Blocage synchrone LSM -EPERM (R1) — VM Linux bootée lsm=…,bpf
+#    (guide d'activation GRUB : vm/setup_lsm_vm.md)
+sudo ./vm/validate_enforce.sh
+
+# 2) Kill réel du responder (R2) — VM Linux NATIVE (pas conteneur)
+sudo ./vm/validate_kill.sh
+```
+
+Tant que ces deux scripts n'ont pas produit `VERDICT: PASS`, considérer le blocage
+LSM et le kill comme **non prouvés sur la plateforme cible** (voir la matrice
+prouvé/non-prouvé de `README.md` et `docs/VALIDATION.md`).
+
+---
+
 ## Prérequis VM Linux (root)
 
 ```bash
