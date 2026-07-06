@@ -1,0 +1,79 @@
+;;;
+;;; CANARIS — minifilter anti-ransomware : fichier d'installation.
+;;;
+;;; Installe le driver Canaris.sys dans le groupe "FSFilter Anti-Virus" avec
+;;; l'altitude 328000 (plage anti-virus 320000-329999, cahier §5 / NF12).
+;;;
+;;; ⚠️ Nécessite Test Signing en VM (bcdedit /set testsigning on) — le driver
+;;; n'est pas signé WHQL (limitation assumée, docs/LIMITATIONS.md).
+;;;
+[Version]
+Signature   = "$Windows NT$"
+Class       = "AntiVirus"
+ClassGuid   = {b1d1a169-c54f-4379-81db-bee7d88d7454}
+Provider    = %ProviderName%
+DriverVer   =
+CatalogFile = Canaris.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir          = 12                    ; %windir%\system32\drivers
+Canaris.DriverFiles     = 12
+
+;;
+;; Installation
+;;
+[DefaultInstall.NTamd64]
+OptionDesc  = %ServiceDescription%
+CopyFiles   = Canaris.DriverFiles
+
+[DefaultInstall.NTamd64.Services]
+AddService  = %ServiceName%,,Canaris.Service
+
+[DefaultUninstall.NTamd64]
+DelFiles    = Canaris.DriverFiles
+LegacyUninstall = 1
+
+[DefaultUninstall.NTamd64.Services]
+DelService  = %ServiceName%,0x200               ; SPSVCINST_STOPSERVICE
+
+;;
+;; Service (minifilter)
+;;
+[Canaris.Service]
+DisplayName    = %ServiceName%
+Description    = %ServiceDescription%
+ServiceBinary  = %12%\Canaris.sys
+Dependencies   = "FltMgr"
+ServiceType    = 2                               ; SERVICE_FILE_SYSTEM_DRIVER
+StartType      = 3                               ; SERVICE_DEMAND_START
+ErrorControl   = 1                               ; SERVICE_ERROR_NORMAL
+LoadOrderGroup = "FSFilter Anti-Virus"
+AddReg         = Canaris.AddRegistry
+
+[Canaris.AddRegistry]
+HKR,"Instances","DefaultInstance",0x00000000,%DefaultInstance%
+HKR,"Instances\"%Instance1.Name%,"Altitude",0x00000000,%Instance1.Altitude%
+HKR,"Instances\"%Instance1.Name%,"Flags",0x00010001,%Instance1.Flags%
+
+[Canaris.DriverFiles]
+Canaris.sys
+
+[SourceDisksFiles]
+Canaris.sys = 1,,
+
+[SourceDisksNames]
+1 = %DiskId1%,,,
+
+;;
+;; Chaînes
+;;
+[Strings]
+ProviderName         = "CANARIS Project"
+ServiceName          = "Canaris"
+ServiceDescription   = "CANARIS Anti-Ransomware Minifilter"
+DiskId1              = "CANARIS Installation Disk"
+DefaultInstance      = "Canaris Instance"
+Instance1.Name       = "Canaris Instance"
+Instance1.Altitude   = "328000"
+Instance1.Flags      = 0x0                        ; 0 = attaché automatiquement

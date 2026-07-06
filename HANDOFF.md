@@ -139,14 +139,36 @@ fltmc filters            # doit lister "Canaris" avec son altitude (320000-32999
 ```
 **Attendu (R3)** : Canaris listé, aucun BSOD.
 
+### [HANDOFF-WIN-WDK] T-W2.5 — Configuration + démarrage du service
+
+Le service pousse la config au driver et traite les alertes (kill + VSS).
+Placer les fichiers de config dans `C:\ProgramData\Canaris\` :
+
+```powershell
+mkdir C:\ProgramData\Canaris -Force
+# dossiers protégés (un chemin DOS par ligne)
+"C:\CanarisDemo" | Out-File -Encoding ascii C:\ProgramData\Canaris\protected_dirs.txt
+# canaries : réutiliser la liste produite par le générateur
+copy C:\CanarisDemo\canary_files.txt C:\ProgramData\Canaris\canary_files.txt
+# whitelist : noms/chemins d'exécutables de confiance (un par ligne)
+"OneDrive.exe`nMsMpEng.exe`nCode.exe" | Out-File -Encoding ascii C:\ProgramData\Canaris\whitelist.txt
+
+# lancer le service en mode console (test)
+.\x64\Debug\CanarisSvc.exe --console
+# (production : sc create CanarisSvc binPath= "...CanarisSvc.exe" start= auto ; sc start CanarisSvc)
+```
+**Attendu** : « Configuration poussee au minifilter. » dans le log
+`C:\ProgramData\Canaris\canaris_events.log`.
+
 ### [HANDOFF-WIN-WDK] T-W3 — Blocage canary (exigence F2.2)
 
 ```powershell
-# Générer un canary, le déclarer protégé, tenter d'y écrire depuis un process non whitelisté
+# Générer un canary, le déclarer protégé (voir T-W2.5), tenter d'y écrire
 python common\canary_generator.py --target-dir C:\CanarisDemo --count 1
 notepad C:\CanarisDemo\RIB_2023.pdf   # tentative d'écriture → STATUS_ACCESS_DENIED
 ```
-**Attendu** : accès refusé, notification envoyée au service.
+**Attendu** : accès refusé (`STATUS_ACCESS_DENIED`), notification au service
+→ log `ALERTE CANARY/BLOCKED pid=… cible=…`, puis kill + snapshot VSS.
 
 ### [HANDOFF-WIN-WDK] T-W4 — RanSim (KnowBe4) (recette R4)
 
