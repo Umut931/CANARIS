@@ -42,6 +42,9 @@ static struct {
 	int         n_canaries;
 	const char *thresholds_path;
 	const char *snapshot_root;
+	const char *baseline_root;
+	double      baseline_interval;
+	int         keep_baselines;
 	const char *log_path;
 	int         json;
 	int         dry_run;
@@ -51,6 +54,9 @@ static struct {
 } env = {
 	.thresholds_path = "config/thresholds.conf",
 	.snapshot_root   = "snapshots",
+	.baseline_root   = "baselines",
+	.baseline_interval = 900.0,   /* 15 min par défaut (0 = désactivé)      */
+	.keep_baselines  = 8,
 	.log_path        = "canaris_events.log",
 	.enforce = 1,
 };
@@ -78,8 +84,10 @@ struct app_ctx {
 	struct profiles_config *cfg;
 	struct pid_state       *table;
 	struct responder       *resp;
-	const char            **protect;
+	const char            **protect;      /* tous (scoping/protection stores) */
 	int                     n_protect;
+	const char            **snap_dirs;    /* dossiers UTILISATEUR à copier    */
+	int                     n_snap_dirs;
 	char                  **canaries;
 	int                     n_canaries;
 	int                     json;
@@ -122,16 +130,20 @@ static const char argp_doc[] =
 	"Charge les programmes eBPF, protège les dossiers/canaries et bloque\n"
 	"les accès malveillants au niveau du kernel (LSM BPF).\n";
 
-enum { OPT_CANARY = 0x100, OPT_CANARY_LIST };
+enum { OPT_CANARY = 0x100, OPT_CANARY_LIST, OPT_BASELINE_ROOT,
+       OPT_BASELINE_INTERVAL, OPT_KEEP_BASELINES };
 
 static const struct argp_option opts[] = {
 	{ "protect",     'p', "DIR",  0, "Répertoire protégé (répétable)" },
-	{ "config",      'c', "FILE", 0, "Profils de seuil (config/profiles.json)" },
-	{ "whitelist",   'w', "FILE", 0, "Liste de process de confiance (1 comm/ligne)" },
+	{ "config",      'c', "FILE", 0, "Profils par processus (config/profiles.json)" },
+	{ "whitelist",   'w', "FILE", 0, "Liste d'exécutables de confiance (1 chemin/ligne)" },
 	{ "canary",      OPT_CANARY,      "PATH", 0, "Fichier canary (répétable)" },
 	{ "canary-list", OPT_CANARY_LIST, "FILE", 0, "Liste de canaries (1 chemin/ligne)" },
-	{ "thresholds",  't', "FILE", 0, "Seuils adaptatifs (config/thresholds.conf)" },
-	{ "snapshot-root", 's', "DIR", 0, "Racine des snapshots (défaut snapshots/)" },
+	{ "thresholds",  't', "FILE", 0, "Profils par processus (config/thresholds.conf)" },
+	{ "snapshot-root", 's', "DIR", 0, "Racine des snapshots forensiques (défaut snapshots/)" },
+	{ "baseline-root", OPT_BASELINE_ROOT, "DIR", 0, "Racine des baselines propres (défaut baselines/)" },
+	{ "baseline-interval", OPT_BASELINE_INTERVAL, "SEC", 0, "Intervalle baseline périodique (défaut 900, 0=off)" },
+	{ "keep-baselines", OPT_KEEP_BASELINES, "N", 0, "Nombre de baselines gardés (rotation, défaut 8)" },
 	{ "log",         'l', "FILE", 0, "Journal des réponses" },
 	{ "json",        'j', NULL,   0, "Émettre les événements en JSON (mode dégradé)" },
 	{ "dry-run",     'd', NULL,   0, "Ne pas tuer/snapshotter réellement (test)" },
@@ -157,6 +169,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case OPT_CANARY_LIST: env.canary_list_path = arg; break;
 	case 't': env.thresholds_path = arg; break;
 	case 's': env.snapshot_root = arg; break;
+	case OPT_BASELINE_ROOT: env.baseline_root = arg; break;
+	case OPT_BASELINE_INTERVAL: env.baseline_interval = atof(arg); break;
+	case OPT_KEEP_BASELINES: env.keep_baselines = atoi(arg); break;
 	case 'l': env.log_path = arg; break;
 	case 'j': env.json = 1; break;
 	case 'd': env.dry_run = 1; break;
@@ -425,7 +440,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
 			if (v != VERDICT_NONE && app->resp) {
 				responder_respond(app->resp, e->tgid, e->comm,
 						  reason_str(v), detail,
-						  app->protect, app->n_protect);
+						  app->snap_dirs, app->n_snap_dirs);
 			}
 		}
 	}
@@ -444,11 +459,21 @@ int main(int argc, char **argv)
 	if (err)
 		return err;
 
-	/* Auto-protège le répertoire de snapshots contre la suppression (cahier
+	/* Crée les stores tôt (realpath/stat doivent les résoudre) et retient le
+	 * nombre de dossiers UTILISATEUR : seuls ceux-ci sont copiés dans les
+	 * baselines/snapshots (jamais les stores eux-mêmes → évite la récursion). */
+	mkdir(env.snapshot_root, 0700);
+	mkdir(env.baseline_root, 0700);
+	int n_user_protect = env.n_protect;
+
+	/* Auto-protège snapshots/ et baselines/ contre la suppression (cahier
 	 * F5.3) : une tentative d'effacer nos sauvegardes est bloquée/détectée par
-	 * le hook LSM inode_unlink, comme n'importe quel dossier protégé. */
+	 * le hook LSM inode_unlink. Ces stores sont protégés (scoping/LSM) mais
+	 * exclus de la COPIE (n_user_protect). */
 	if (env.n_protect < MAX_PROTECT_DIRS)
 		env.protect_dirs[env.n_protect++] = env.snapshot_root;
+	if (env.n_protect < MAX_PROTECT_DIRS)
+		env.protect_dirs[env.n_protect++] = env.baseline_root;
 
 	libbpf_set_print(libbpf_print_fn);
 	signal(SIGINT, sig_handler);
@@ -509,7 +534,19 @@ int main(int argc, char **argv)
 	profiles_load(&prof_cfg, env.thresholds_path);
 	struct pid_state *pidtable = pidstate_table_new();
 	struct responder resp;
-	responder_init(&resp, env.snapshot_root, env.log_path, env.dry_run);
+	responder_init(&resp, env.snapshot_root, env.baseline_root, env.log_path,
+		       env.keep_baselines, env.dry_run);
+
+	/* Baseline PROPRE initial pris AVANT toute attaque (source de récupération) :
+	 * la préservation ne dépend PAS du snapshot réactif (déjà chiffré). */
+	if (env.baseline_interval > 0 && n_user_protect > 0 && !env.json) {
+		char bpath[600] = {};
+		responder_baseline(&resp, (const char *const *)protect_resolved,
+				   n_user_protect, bpath, sizeof(bpath));
+		if (!env.quiet)
+			printf("Baseline propre initial : %s (périodique toutes %.0fs)\n",
+			       bpath, env.baseline_interval);
+	}
 
 	struct app_ctx app = {
 		.cfg = &prof_cfg,
@@ -517,6 +554,8 @@ int main(int argc, char **argv)
 		.resp = &resp,
 		.protect = (const char **)protect_resolved,
 		.n_protect = env.n_protect,
+		.snap_dirs = (const char **)protect_resolved,
+		.n_snap_dirs = n_user_protect,   /* stores exclus de la copie */
 		.canaries = g_canaries,
 		.n_canaries = g_ncanaries,
 		.json = env.json,
@@ -543,12 +582,21 @@ int main(int argc, char **argv)
 			printf("(mode --quiet : seules les alertes et réponses sont affichées)\n");
 	}
 
+	time_t last_baseline = time(NULL);
 	while (!exiting) {
 		err = ring_buffer__poll(rb, 50 /* ms */);
 		if (err == -EINTR) { err = 0; break; }
 		if (err < 0) {
 			fprintf(stderr, "erreur poll ring buffer: %d\n", err);
 			break;
+		}
+		/* Baseline propre périodique (préservation AVANT attaque). */
+		if (env.baseline_interval > 0 && n_user_protect > 0 && !env.json &&
+		    difftime(time(NULL), last_baseline) >= env.baseline_interval) {
+			char bpath[600] = {};
+			responder_baseline(&resp, (const char *const *)protect_resolved,
+					   n_user_protect, bpath, sizeof(bpath));
+			last_baseline = time(NULL);
 		}
 	}
 

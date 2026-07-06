@@ -24,6 +24,7 @@ Décisions clés (CLAUDE.md §2.3, cahier F3) :
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -231,23 +232,46 @@ class Detector:
         return None
 
 
+# Marqueurs de fichiers déjà chiffrés : un BASELINE ne doit JAMAIS les capturer.
+ENCRYPTION_MARKERS = (
+    ".locked", ".canaris_locked", ".encrypted", ".enc", ".crypt", ".crypto",
+    ".locky", ".cerber", ".ryuk", ".conti", ".lockbit", ".pay", ".wcry", ".wncry",
+)
+
+
 # ==========================================================================
-# Responder : snapshot + kill (Phase 4, F4.1/F4.3/F4.6)
+# Responder : baseline périodique + snapshot réactif + kill (F4.1/F4.3/F4.6)
 # ==========================================================================
 class Responder:
-    """Réponse de préservation : snapshot des dossiers protégés (liens durs à la
-    façon `rsync --link-dest`) puis terminaison du processus, avec journalisation.
+    """Préservation en DEUX temps (leçon de la course du chiffrement rapide) :
 
-    Portable : utilise les liens durs (os.link) pour un snapshot incrémental
-    quasi instantané ; repli sur copie si les liens durs échouent (systèmes de
-    fichiers hétérogènes). La version C (responder.c) utilise rsync --link-dest.
+      1. **Baseline PÉRIODIQUE** (`baseline_snapshot`) pris AVANT toute attaque,
+         toutes les N minutes. C'est la source de RÉCUPÉRATION. Il **copie** les
+         fichiers modifiés (jamais un lien dur vers la source vivante — sinon une
+         réécriture en place corromprait la sauvegarde) et déduplique par liens
+         durs contre le baseline PRÉCÉDENT (sémantique `rsync --link-dest`). Il
+         **exclut** tout fichier portant un marqueur de chiffrement.
+
+      2. **Snapshot RÉACTIF** (`incident_snapshot`) pris à la détection : capture
+         l'état COURANT (potentiellement déjà chiffré). Il est étiqueté
+         `post-incident-state` = FORENSIQUE, PAS une source de restauration.
+
+    En mode ENFORCE (LSM actif) le blocage empêche le chiffrement → les fichiers
+    restent propres. En mode DÉGRADÉ, le baseline périodique est la seule vraie
+    garantie de préservation. Les deux se renforcent (belt & suspenders).
     """
 
-    def __init__(self, snapshot_root, log_path=None, dry_run=False):
-        self.snapshot_root = Path(snapshot_root)
+    def __init__(self, snapshot_root, log_path=None, dry_run=False,
+                 baseline_root=None, keep_baselines=8, markers=ENCRYPTION_MARKERS):
+        self.snapshot_root = Path(snapshot_root)          # réactif / forensique
+        self.baseline_root = (Path(baseline_root) if baseline_root
+                              else self.snapshot_root.parent / "baselines")
         self.log_path = Path(log_path) if log_path else None
         self.dry_run = dry_run
+        self.keep_baselines = keep_baselines
+        self.markers = tuple(m.lower() for m in markers)
 
+    # --------------------------------------------------------------- log
     def log(self, msg: str):
         line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {msg}"
         if self.log_path:
@@ -255,37 +279,122 @@ class Responder:
                 f.write(line + "\n")
         return line
 
-    def snapshot(self, protected_dirs) -> Path:
-        """Crée snapshots/<timestamp>/ avec des liens durs vers le contenu
-        actuel des dossiers protégés (préservation avant chiffrement)."""
+    # ------------------------------------------------------------- utils
+    def _is_encrypted(self, path: Path) -> bool:
+        return path.name.lower().endswith(self.markers)
+
+    @staticmethod
+    def _under(path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except (ValueError, OSError):
+            return False
+
+    def _skip(self, src: Path) -> bool:
+        """Ne jamais capturer : un fichier chiffré, ni le contenu des stores."""
+        return (self._is_encrypted(src)
+                or self._under(src, self.baseline_root)
+                or self._under(src, self.snapshot_root))
+
+    # -------------------------------------------------- baseline (T1)
+    def latest_clean_baseline(self):
+        bs = sorted(self.baseline_root.glob("baseline-*"))
+        return bs[-1] if bs else None
+
+    def _rotate_baselines(self, keep: int):
+        import shutil
+        bs = sorted(self.baseline_root.glob("baseline-*"))
+        for old in bs[:-keep] if keep > 0 else bs:
+            shutil.rmtree(old, ignore_errors=True)
+
+    def baseline_snapshot(self, protected_dirs, keep=None) -> Path:
+        """Baseline propre pris périodiquement AVANT toute attaque. Copie les
+        fichiers changés, déduplique par lien dur contre le baseline précédent,
+        exclut les fichiers chiffrés et les stores. Applique la rotation (K)."""
+        import shutil
+        keep = self.keep_baselines if keep is None else keep
         ts = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time()*1000) % 1000:03d}"
-        dest = self.snapshot_root / ts
+        dest = self.baseline_root / f"baseline-{ts}"
+        if self.dry_run:
+            return dest
+        prev = self.latest_clean_baseline()
+        dest.mkdir(parents=True, exist_ok=True)
+
+        for d in protected_dirs:
+            d = Path(d)
+            if not d.exists() or not d.is_dir():
+                continue
+            for src in d.rglob("*"):
+                if src.is_dir() or self._skip(src):
+                    continue
+                try:
+                    st = src.stat()
+                except OSError:
+                    continue
+                rel = Path(d.name) / src.relative_to(d)
+                target = dest / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+
+                # Déduplication : lien dur depuis le baseline précédent si le
+                # fichier n'a pas changé (taille+mtime, comme rsync --link-dest).
+                linked = False
+                if prev is not None:
+                    pf = prev / rel
+                    if pf.exists():
+                        try:
+                            pst = pf.stat()
+                            if pst.st_size == st.st_size and \
+                               int(pst.st_mtime) == int(st.st_mtime):
+                                os.link(pf, target)     # copie-de-copie : sûr
+                                linked = True
+                        except OSError:
+                            pass
+                if not linked:
+                    # COPIE du contenu source (immunise contre une réécriture
+                    # en place ultérieure — jamais de lien dur vers la source).
+                    try:
+                        shutil.copy2(src, target)
+                    except OSError:
+                        pass
+
+        self._rotate_baselines(keep)
+        return dest
+
+    # ------------------------------------------------ snapshot réactif
+    def incident_snapshot(self, protected_dirs) -> Path:
+        """Snapshot FORENSIQUE de l'état courant à la détection (peut contenir du
+        chiffré). Étiqueté post-incident-state ; N'EST PAS une source de
+        restauration — celle-ci est le dernier baseline propre."""
+        ts = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time()*1000) % 1000:03d}"
+        dest = self.snapshot_root / f"post-incident-{ts}"
         if self.dry_run:
             return dest
         dest.mkdir(parents=True, exist_ok=True)
+        import shutil
         for d in protected_dirs:
             d = Path(d)
             if not d.exists():
                 continue
-            base = dest / d.name
             for src in d.rglob("*"):
-                if src.is_dir():
+                if src.is_dir() or self._under(src, self.snapshot_root) or \
+                        self._under(src, self.baseline_root):
                     continue
-                rel = src.relative_to(d)
-                target = base / rel
+                target = dest / d.name / src.relative_to(d)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    os_link(src, target)          # lien dur : ~instantané
+                    os.link(src, target)
                 except OSError:
-                    import shutil
-                    shutil.copy2(src, target)      # repli copie
+                    try:
+                        shutil.copy2(src, target)
+                    except OSError:
+                        pass
         return dest
 
     def kill(self, pid: int) -> bool:
         """Termine le processus suspect (SIGKILL/Terminate)."""
         if self.dry_run:
             return True
-        import os
         import signal
         try:
             if os.name == "nt":
@@ -299,25 +408,42 @@ class Responder:
             return False
 
     def respond(self, verdict: Verdict, protected_dirs) -> dict:
-        """Réponse complète : snapshot PUIS kill, avec mesure de latence.
-        Ordre : on préserve d'abord (snapshot par liens durs, quasi instantané),
-        puis on tue — le snapshot capture l'état avant toute écriture ultérieure."""
+        """Réponse : snapshot forensique de l'état courant PUIS kill. La source
+        de RÉCUPÉRATION recommandée est le dernier baseline propre (loggué)."""
         t0 = time.perf_counter()
-        snap = self.snapshot(protected_dirs)
+        snap = self.incident_snapshot(protected_dirs)
         killed = self.kill(verdict.pid)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        baseline = self.latest_clean_baseline()
         line = self.log(
             f"RÉPONSE pid={verdict.pid} comm={verdict.comm} raison={verdict.reason} "
-            f"({verdict.detail}) snapshot={snap.name} kill={'ok' if killed else 'échec'} "
+            f"({verdict.detail}) forensique={snap.name} kill={'ok' if killed else 'échec'} "
             f"latence={elapsed_ms:.1f}ms")
+        self.log(f"  RESTAURATION recommandée depuis le dernier baseline propre : "
+                 f"{baseline if baseline else '(AUCUN baseline — activez le baseline périodique !)'}")
         return {"snapshot": snap, "killed": killed, "elapsed_ms": elapsed_ms,
-                "log": line}
+                "baseline": baseline, "log": line}
 
 
-def os_link(src, dst):
-    """os.link avec import local (garde le module importable partout)."""
-    import os
-    os.link(src, dst)
+def run_periodic_baseline(responder: "Responder", protected_dirs, interval_s,
+                          stop_event=None, max_iterations=None):
+    """Boucle de baseline périodique (à lancer dans un thread par le service).
+    Prend un baseline propre toutes `interval_s` secondes jusqu'à l'arrêt."""
+    import threading
+    n = 0
+    while True:
+        responder.baseline_snapshot(protected_dirs)
+        n += 1
+        if max_iterations and n >= max_iterations:
+            return
+        if stop_event is not None:
+            if isinstance(stop_event, threading.Event):
+                if stop_event.wait(interval_s):
+                    return
+            else:
+                time.sleep(interval_s)
+        else:
+            time.sleep(interval_s)
 
 
 # ==========================================================================
@@ -345,11 +471,20 @@ if __name__ == "__main__":
     import argparse
     import sys
 
+    import threading
+
     ap = argparse.ArgumentParser(description="Moteur de détection CANARIS (userspace)")
     ap.add_argument("--config", default="config/profiles.json")
     ap.add_argument("--canary-list", help="fichier de chemins canary")
     ap.add_argument("--protect", action="append", default=[], help="dossier protégé")
     ap.add_argument("--snapshot-root", default="snapshots")
+    ap.add_argument("--baseline-root", default=None,
+                    help="racine des baselines propres (défaut: <snapshot-root>/../baselines)")
+    ap.add_argument("--baseline-interval", type=float, default=0.0,
+                    help="secondes entre baselines périodiques (0 = désactivé)")
+    ap.add_argument("--keep-baselines", type=int, default=8)
+    ap.add_argument("--baseline-once", action="store_true",
+                    help="prendre un seul baseline propre puis quitter (cron/test)")
     ap.add_argument("--log", default="canaris_events.log")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -360,7 +495,24 @@ if __name__ == "__main__":
         canaries = [l.strip() for l in open(args.canary_list, encoding="utf-8")
                     if l.strip()]
     det = Detector(profs, canaries, args.protect)
-    resp = Responder(args.snapshot_root, args.log, dry_run=args.dry_run)
+    resp = Responder(args.snapshot_root, args.log, dry_run=args.dry_run,
+                     baseline_root=args.baseline_root,
+                     keep_baselines=args.keep_baselines)
+
+    if args.baseline_once:
+        b = resp.baseline_snapshot(args.protect)
+        print(f"Baseline propre créé : {b}")
+        sys.exit(0)
+
+    # Baseline périodique dans un thread (préservation AVANT attaque).
+    if args.baseline_interval > 0 and args.protect:
+        t = threading.Thread(target=run_periodic_baseline,
+                             args=(resp, args.protect, args.baseline_interval),
+                             daemon=True)
+        t.start()
+        print(f"Baseline périodique actif : toutes les {args.baseline_interval:.0f}s "
+              f"(garde {args.keep_baselines})")
+
     print(f"CANARIS engine — {len(canaries)} canaries, {len(args.protect)} dossiers protégés")
     for raw in sys.stdin:
         raw = raw.strip()

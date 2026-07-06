@@ -2,6 +2,7 @@
 /* CANARIS — implémentation du responder (Phase 4). */
 #include "responder.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -52,16 +53,21 @@ static double now_ms(void)
 }
 
 int responder_init(struct responder *r, const char *snapshot_root,
-		   const char *log_path, int dry_run)
+		   const char *baseline_root, const char *log_path,
+		   int keep_baselines, int dry_run)
 {
 	memset(r, 0, sizeof(*r));
-	strncpy(r->snapshot_root, snapshot_root ? snapshot_root : "snapshots",
-		sizeof(r->snapshot_root) - 1);
-	strncpy(r->log_path, log_path ? log_path : "canaris_events.log",
-		sizeof(r->log_path) - 1);
+	snprintf(r->snapshot_root, sizeof(r->snapshot_root), "%s",
+		 snapshot_root ? snapshot_root : "snapshots");
+	snprintf(r->baseline_root, sizeof(r->baseline_root), "%s",
+		 baseline_root ? baseline_root : "baselines");
+	snprintf(r->log_path, sizeof(r->log_path), "%s",
+		 log_path ? log_path : "canaris_events.log");
+	r->keep_baselines = keep_baselines > 0 ? keep_baselines : 8;
 	r->dry_run = dry_run;
 	r->have_rsync = command_exists("rsync");
 	mkdir(r->snapshot_root, 0700);
+	mkdir(r->baseline_root, 0700);
 	return 0;
 }
 
@@ -88,10 +94,16 @@ void responder_log(struct responder *r, const char *fmt, ...)
 	}
 }
 
-int responder_snapshot(struct responder *r, const char *const *dirs, int n,
-		       char *out_path, int out_len)
+/* Marqueurs de fichiers déjà chiffrés : un BASELINE ne doit jamais les copier. */
+static const char *ENC_EXCLUDES[] = {
+	"--exclude=*.LOCKED", "--exclude=*.CANARIS_LOCKED", "--exclude=*.encrypted",
+	"--exclude=*.enc", "--exclude=*.crypt", "--exclude=*.crypto",
+	"--exclude=*.lockbit", "--exclude=*.ryuk", "--exclude=*.conti",
+};
+#define N_ENC_EXCLUDES ((int)(sizeof(ENC_EXCLUDES) / sizeof(ENC_EXCLUDES[0])))
+
+static void gen_stamp(char *ts, size_t len)
 {
-	char ts[48];
 	struct timespec now;
 	clock_gettime(CLOCK_REALTIME, &now);
 	struct tm tm;
@@ -99,49 +111,125 @@ int responder_snapshot(struct responder *r, const char *const *dirs, int n,
 	localtime_r(&t, &tm);
 	char stamp[24];
 	strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
-	int millis = (int)(now.tv_nsec / 1000000);
-	snprintf(ts, sizeof(ts), "%s-%03d", stamp, millis);
+	snprintf(ts, len, "%s-%03d", stamp, (int)(now.tv_nsec / 1000000));
+}
 
+/* Synchronise UN dossier source vers dest/<base>/, avec --link-dest optionnel
+ * (contre <linkroot>/<base>) et exclusion optionnelle des fichiers chiffrés. */
+static void sync_one(struct responder *r, const char *src, const char *dest,
+		     const char *linkroot, int exclude_enc)
+{
+	const char *base = strrchr(src, '/');
+	base = base ? base + 1 : src;
+
+	if (!r->have_rsync) {
+		/* repli : cp -a (pas d'exclusion fine ; le baseline propre repose
+		 * alors sur la fréquence de prise plutôt que sur l'exclusion). */
+		const char *argv[] = { "cp", "-a", src, dest, NULL };
+		run_cmd(argv);
+		return;
+	}
+
+	char subdest[800], srcslash[600], linkdest[800] = {};
+	snprintf(subdest, sizeof(subdest), "%s/%s", dest, base);
+	mkdir(subdest, 0700);
+	snprintf(srcslash, sizeof(srcslash), "%s/", src);
+
+	const char *argv[8 + N_ENC_EXCLUDES];
+	int a = 0;
+	argv[a++] = "rsync";
+	argv[a++] = "-a";
+	if (linkroot && linkroot[0]) {
+		snprintf(linkdest, sizeof(linkdest), "--link-dest=%s/%s", linkroot, base);
+		argv[a++] = linkdest;
+	}
+	if (exclude_enc)
+		for (int e = 0; e < N_ENC_EXCLUDES; e++)
+			argv[a++] = ENC_EXCLUDES[e];
+	argv[a++] = srcslash;
+	argv[a++] = subdest;
+	argv[a] = NULL;
+	run_cmd(argv);
+}
+
+/* Rotation : ne garde que les `keep` derniers "baseline-*" (tri lexical = tri
+ * temporel grâce à l'horodatage). */
+static void rotate_baselines(struct responder *r)
+{
+	DIR *d = opendir(r->baseline_root);
+	if (!d)
+		return;
+	enum { MAX_TRACK = 128, NAME_W = 256 };
+	char names[MAX_TRACK][NAME_W];
+	int count = 0;
+	struct dirent *e;
+	while ((e = readdir(d)) && count < MAX_TRACK) {
+		if (strncmp(e->d_name, "baseline-", 9) == 0)
+			snprintf(names[count++], NAME_W, "%s", e->d_name);
+	}
+	closedir(d);
+	/* tri à bulles (petits volumes) */
+	for (int i = 0; i < count; i++)
+		for (int j = i + 1; j < count; j++)
+			if (strcmp(names[i], names[j]) > 0) {
+				char tmp[NAME_W];
+				snprintf(tmp, NAME_W, "%s", names[i]);
+				snprintf(names[i], NAME_W, "%s", names[j]);
+				snprintf(names[j], NAME_W, "%s", tmp);
+			}
+	for (int i = 0; i < count - r->keep_baselines; i++) {
+		char path[900];
+		/* précisions bornées : cap la largeur des %s (évite le warning de
+		 * troncature dû à la perte de borne de tableau au -O2). */
+		snprintf(path, sizeof(path), "%.511s/%.255s", r->baseline_root, names[i]);
+		const char *argv[] = { "rm", "-rf", path, NULL };
+		run_cmd(argv);
+	}
+}
+
+int responder_baseline(struct responder *r, const char *const *dirs, int n,
+		       char *out_path, int out_len)
+{
+	char ts[48];
+	gen_stamp(ts, sizeof(ts));
 	char dest[600];
-	snprintf(dest, sizeof(dest), "%s/%s", r->snapshot_root, ts);
+	snprintf(dest, sizeof(dest), "%s/baseline-%s", r->baseline_root, ts);
+	if (out_path)
+		snprintf(out_path, out_len, "%s", dest);
+	if (r->dry_run)
+		return 0;
+	if (mkdir(dest, 0700) != 0 && errno != EEXIST)
+		return -1;
+
+	for (int i = 0; i < n; i++)
+		sync_one(r, dirs[i], dest,
+			 r->last_baseline[0] ? r->last_baseline : NULL,
+			 1 /* exclut les fichiers chiffrés */);
+
+	snprintf(r->last_baseline, sizeof(r->last_baseline), "%s", dest);
+	rotate_baselines(r);
+	return 0;
+}
+
+int responder_snapshot(struct responder *r, const char *const *dirs, int n,
+		       char *out_path, int out_len)
+{
+	char ts[48];
+	gen_stamp(ts, sizeof(ts));
+	char dest[600];
+	/* étiqueté post-incident : FORENSIQUE, pas une source de restauration. */
+	snprintf(dest, sizeof(dest), "%s/post-incident-%s", r->snapshot_root, ts);
 	snprintf(out_path, out_len, "%s", dest);
 	if (r->dry_run)
 		return 0;
 	if (mkdir(dest, 0700) != 0 && errno != EEXIST)
 		return -1;
 
-	for (int i = 0; i < n; i++) {
-		if (r->have_rsync) {
-			/* rsync -a --link-dest=<prev> <src>/ <dest>/<name>/ */
-			char linkdest[800] = {};
-			const char *base = strrchr(dirs[i], '/');
-			base = base ? base + 1 : dirs[i];
-			char subdest[800];
-			snprintf(subdest, sizeof(subdest), "%s/%s", dest, base);
-			mkdir(subdest, 0700);
+	for (int i = 0; i < n; i++)
+		sync_one(r, dirs[i], dest,
+			 r->last_snapshot[0] ? r->last_snapshot : NULL,
+			 0 /* forensique : on capture tout, y compris chiffré */);
 
-			char srcslash[600];
-			snprintf(srcslash, sizeof(srcslash), "%s/", dirs[i]);
-
-			const char *argv[8];
-			int a = 0;
-			argv[a++] = "rsync";
-			argv[a++] = "-a";
-			if (r->last_snapshot[0]) {
-				snprintf(linkdest, sizeof(linkdest),
-					 "--link-dest=%s/%s", r->last_snapshot, base);
-				argv[a++] = linkdest;
-			}
-			argv[a++] = srcslash;
-			argv[a++] = subdest;
-			argv[a] = NULL;
-			run_cmd(argv);
-		} else {
-			/* repli : cp -a <src> <dest>/ (copie récursive) */
-			const char *argv[] = { "cp", "-a", dirs[i], dest, NULL };
-			run_cmd(argv);
-		}
-	}
 	snprintf(r->last_snapshot, sizeof(r->last_snapshot), "%s", dest);
 	return 0;
 }
@@ -173,8 +261,17 @@ double responder_respond(struct responder *r, uint32_t pid, const char *comm,
 	else
 		snprintf(killstr, sizeof(killstr), "echec(%s)", strerror(-killed));
 	responder_log(r,
-		"REPONSE pid=%u comm=%s raison=%s (%s) snapshot=%s kill=%s latence=%.1fms",
+		"REPONSE pid=%u comm=%s raison=%s (%s) forensique=%s kill=%s latence=%.1fms",
 		pid, comm, reason, detail ? detail : "", snapname,
 		killstr, elapsed);
+	/* Source de RÉCUPÉRATION = dernier baseline propre (pas le forensique). */
+	if (r->last_baseline[0]) {
+		const char *bn = strrchr(r->last_baseline, '/');
+		responder_log(r, "  RESTAURATION recommandee depuis le baseline propre : %s",
+			      bn ? bn + 1 : r->last_baseline);
+	} else {
+		responder_log(r, "  ATTENTION : aucun baseline propre — activez le "
+			      "baseline periodique (--baseline-interval)");
+	}
 	return elapsed;
 }

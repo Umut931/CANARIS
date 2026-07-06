@@ -60,15 +60,29 @@ int main(void)
 		if (fp) { fprintf(fp, "contenu utilisateur important %d\n", i); fclose(fp); }
 	}
 
+	char blroot[1100];
+	snprintf(blroot, sizeof(blroot), "%s/baselines", base);
 	struct responder r;
-	responder_init(&r, snaproot, logp, 0);
+	responder_init(&r, snaproot, blroot, logp, 8, 0);
 
-	/* --- snapshot --- */
+	/* --- baseline propre (T1) : capture les fichiers, exclut les chiffrés --- */
+	char bout[600];
+	/* pose un fichier déjà chiffré : il ne doit PAS entrer dans le baseline */
+	char locked[1200];
+	snprintf(locked, sizeof(locked), "%s/deja.txt.CANARIS_LOCKED", protected);
+	FILE *lf = fopen(locked, "w");
+	if (lf) { fprintf(lf, "chiffre"); fclose(lf); }
+	int brc = responder_baseline(&r, (const char *[]){ protected }, 1, bout, sizeof(bout));
+	CHECK(brc == 0, "responder_baseline renvoie 0");
+	int bfiles = count_files(bout);
+	CHECK(bfiles == 25, "baseline contient les 25 fichiers propres (chiffré exclu)");
+
+	/* --- snapshot forensique --- */
 	char out[600];
 	int rc = responder_snapshot(&r, (const char *[]){ protected }, 1, out, sizeof(out));
 	CHECK(rc == 0, "responder_snapshot renvoie 0");
 	int nf = count_files(out);
-	CHECK(nf == 25, "snapshot contient les 25 fichiers préservés");
+	CHECK(nf == 26, "snapshot forensique capture tout (25 + le chiffré)");
 
 	/* --- kill réel d'un fils --- */
 	pid_t child = fork();

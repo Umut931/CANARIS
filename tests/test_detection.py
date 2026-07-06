@@ -167,9 +167,10 @@ def test_responder_snapshot_and_kill_latency(tmp_path):
             proc.kill()
 
 
-def test_snapshot_uses_hardlinks_when_possible(tmp_path):
-    """Le snapshot par liens durs est quasi instantané (préservation avant
-    chiffrement) : on vérifie qu'il capture le contenu."""
+def test_incident_snapshot_captures_current_state(tmp_path):
+    """Le snapshot forensique (post-incident) capture l'état courant par liens
+    durs quasi instantanés. NB : c'est de la forensique, pas la source de
+    restauration — celle-ci est le baseline (voir test_baseline_snapshot.py)."""
     protected = tmp_path / "data"
     protected.mkdir()
     (protected / "a.txt").write_text("secret")
@@ -177,6 +178,7 @@ def test_snapshot_uses_hardlinks_when_possible(tmp_path):
     (protected / "sub" / "b.txt").write_text("secret2")
 
     resp = Responder(tmp_path / "snap")
-    snap = resp.snapshot([protected])
+    snap = resp.incident_snapshot([protected])
+    assert "post-incident" in snap.name
     assert (snap / "data" / "a.txt").read_text() == "secret"
     assert (snap / "data" / "sub" / "b.txt").read_text() == "secret2"
