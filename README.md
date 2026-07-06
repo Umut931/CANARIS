@@ -4,7 +4,30 @@
 
 > 🚧 **Statut : en construction.** Composant Linux (eBPF + LSM BPF) prioritaire, composant Windows (minifilter) en second. Voir le [cahier des charges](CAHIER_DES_CHARGES.md) et le [contexte projet](CLAUDE.md).
 
-CANARIS détecte et stoppe un ransomware **en cours de chiffrement**, puis préserve les données via snapshot — le tout depuis le noyau, hors de portée du malware. Aucune signature : la détection est **comportementale**.
+CANARIS détecte et stoppe un ransomware **en cours de chiffrement**, puis préserve les données via un **baseline propre pris avant l'attaque** — le tout depuis le noyau, hors de portée du malware. Aucune signature : la détection est **comportementale**.
+
+---
+
+## Matrice PROUVÉ ICI ✅ / À VALIDER EN VM 🖥️ (recette §10)
+
+> Honnêteté avant tout : **aucun mécanisme marqué 🖥️ n'est présenté comme validé.**
+> Les deux piliers de la thèse sécurité — **blocage LSM `-EPERM`** et **kill réel** —
+> n'ont pas pu être exécutés dans l'env de dev (Docker/WSL2 sans `bpf` LSM actif ni
+> init-namespace) ; des harnais turnkey les prouvent en VM (`vm/`).
+
+| # | Exigence | Prouvé ICI (comment) | À valider en VM (script) |
+|---|---|---|---|
+| R1 | Blocage `-EPERM` sur canary (Linux) | Verifier LSM OK sur les 3 hooks (Docker/WSL2) ; logique prouvée | 🖥️ `vm/validate_enforce.sh` (kernel `lsm=…,bpf`) |
+| R2 | Détection→kill→snapshot | Détection scopée + **baseline avant attaque** E2E réel ; kill+latence unit C (47 ms) ; baseline préserve l'original malgré chiffreur 7 ms | 🖥️ `vm/validate_kill.sh` (VM native) |
+| R3 | Chargement minifilter | Revue statique (`windows/REVIEW_NOTES.md`) — **jamais compilé** | 🖥️ `vm/build_windows.ps1` + `vm/validate_windows.md` |
+| R4 | RanSim en VM Windows | — | 🖥️ `vm/validate_windows.md` §5 |
+| R5 | Suppression VSS → alerte | Matching command-lines testé (C + Python) | 🖥️ `vm/validate_windows.md` §6 |
+| R6 | npm install → 0 faux positif | 0 FP sur workloads **synthétiques** (56 tests) | 🖥️ `vm/fp_workload.sh` (npm **réel**) |
+| R7 | git/rsync/sync → 0 faux positif | 0 FP synthétiques | 🖥️ `vm/fp_workload.sh` (git/rsync **réels**) |
+| R8 | Surcoût latence I/O < 5 % | — | 🖥️ `demo/benchmark_io.sh` (Lin) / `vm/validate_windows.md` §7 (Win) |
+
+Preuves d'exécution détaillées : [docs/VALIDATION.md](docs/VALIDATION.md). Limites
+assumées : [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ---
 
@@ -61,24 +84,6 @@ python3 common/canary_generator.py --target-dir ~/Documents --count 20
 ```
 
 Instructions de test complètes (VM Linux root, VM Windows WDK) : [HANDOFF.md](HANDOFF.md).
-
----
-
-## État de la recette (cahier des charges §10)
-
-| # | Test | Statut |
-|---|---|---|
-| R1 | Blocage `-EPERM` sur accès canary (Linux) | ✅ verifier LSM OK (Docker/WSL2) · 🖥️ enforcement HANDOFF (VM `lsm=…,bpf`) |
-| R2 | Simulateur ransomware → kill + snapshot < 500 ms | ✅ détection+snapshot E2E réel + kill/latence unit C (47 ms) · 🖥️ E2E VM native |
-| R3 | Chargement minifilter (VM Win) | 🖥️ HANDOFF (VM WDK) |
-| R4 | RanSim en VM Windows | 🖥️ HANDOFF |
-| R5 | Suppression VSS → alerte prioritaire | ✅ matching testé (C + Python) · 🖥️ driver HANDOFF (VM) |
-| R6 | npm install → zéro faux positif | ✅ testé (simulé) |
-| R7 | OneDrive + git clone → zéro faux positif | ✅ testé (simulé) |
-| R8 | Benchmark latence I/O < 5 % | 🖥️ HANDOFF (VM, `demo/benchmark_io.sh`) |
-
-Légende : ✅ testé automatiquement · 🖥️ à valider en VM (voir [HANDOFF.md](HANDOFF.md)).
-Preuves d'exécution détaillées : [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ---
 

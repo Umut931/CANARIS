@@ -3,7 +3,34 @@
 Document d'honnêteté : les limites connues, assumées et non résolues. En
 entretien, c'est un argument de crédibilité, pas une faiblesse cachée.
 
+> **Ce qui n'a PAS été exécuté dans l'environnement de dev** (et pourquoi), en une
+> phrase chacun :
+> - **Blocage LSM `-EPERM`** : jamais enforced ici (WSL2 n'a pas `bpf` dans la
+>   liste LSM active) — seulement compilé + verifier. → `vm/validate_enforce.sh`.
+> - **Kill réel du responder** : jamais validé en intégration ici (décalage de
+>   PID-namespace du conteneur) — prouvé par test unitaire C same-namespace.
+>   → `vm/validate_kill.sh` sur VM native.
+> - **Driver Windows (~1000 lignes)** : **écrit, revu statiquement, jamais compilé
+>   ni chargé** (pas de WDK) — build/chargement = `vm/build_windows.ps1` +
+>   `vm/validate_windows.md` ; points d'attention dans `windows/REVIEW_NOTES.md`.
+> - **Faux positifs** : 0 sur workloads **synthétiques** seulement ici — mesure
+>   réelle = `vm/fp_workload.sh`.
+
 ---
+
+## 0. Préservation : baseline périodique, PAS un snapshot réactif (décision T1)
+
+**Historique de la décision.** La première version prenait le snapshot **à la
+détection** — donc sur des fichiers **déjà chiffrés** : préservation inutile contre
+un chiffreur rapide (mesuré : 200 fichiers en 37 ms, 30 en 7 ms). Correction : la
+source de récupération est désormais un **baseline PÉRIODIQUE pris AVANT l'attaque**
+(défaut 15 min, rotation 8), qui **copie** les fichiers (jamais un lien dur vers la
+source vivante, sinon une réécriture en place corromprait la sauvegarde) et
+**exclut** tout fichier déjà chiffré. Le snapshot pris à la détection est conservé
+mais **relabellé `post-incident` (forensique)**, pas une source de restauration.
+**Limite** : le baseline est **local** (même machine) et périodique → une fenêtre
+de perte = les fichiers créés/modifiés depuis le dernier baseline. Une vraie
+stratégie 3-2-1 (copie hors-ligne/distante) reste hors périmètre (§8).
 
 ## 1. Déploiement Windows sans signature WHQL (limitation MAJEURE, assumée)
 
