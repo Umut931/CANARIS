@@ -129,11 +129,18 @@ static BOOLEAN CanarisIsProtected(_In_ PUNICODE_STRING Target, _Out_ PBOOLEAN Is
     for (e = gProtectedList.Flink; e != &gProtectedList; e = e->Flink) {
         PCANARIS_ENTRY entry = CONTAINING_RECORD(e, CANARIS_ENTRY, Link);
         if (entry->IsDir) {
-            // préfixe : Target commence par entry->Path + '\'
+            // Préfixe de sous-arbre : Target doit commencer par entry->Path
+            // ET le caractère suivant doit être un séparateur (ou fin), sinon
+            // "\dir" matcherait "\dir2\..." à tort.
             if (Target->Length >= entry->Path.Length &&
                 RtlPrefixUnicodeString(&entry->Path, Target, TRUE)) {
-                found = TRUE;
-                break;
+                USHORT preChars = entry->Path.Length / sizeof(WCHAR);
+                USHORT tgtChars = Target->Length / sizeof(WCHAR);
+                if (tgtChars == preChars ||
+                    Target->Buffer[preChars] == L'\\') {
+                    found = TRUE;
+                    break;
+                }
             }
         } else {
             if (RtlEqualUnicodeString(&entry->Path, Target, TRUE)) {
