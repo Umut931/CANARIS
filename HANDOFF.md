@@ -8,6 +8,15 @@ Convention :
 - **`[HANDOFF-LINUX-ROOT]`** — nécessite une VM Linux (kernel ≥ 5.7, BTF, LSM BPF activé, root)
 - **`[HANDOFF-WIN-WDK]`** — nécessite une VM Windows avec WDK + Test Signing + HVCI désactivé
 
+> **Déjà validé pendant le dev** (via Docker `--privileged` sur le kernel WSL2 6.18,
+> voir `docs/VALIDATION.md`) : compilation CO-RE, **BPF verifier** (kprobes + 3 LSM),
+> observation live des syscalls, détection scopée + snapshot end-to-end, tests C
+> (`profiles.c`/`responder.c`/`vssguard_rules.h`) et 47 tests Python. Restent ci-dessous
+> ce qui exige le kernel cible bootté `lsm=…,bpf` (enforcement) ou une VM Windows WDK.
+>
+> Démo/bench prêts : `demo/run_demo.sh` (détection→snapshot pour la vidéo),
+> `demo/benchmark_io.sh` (surcoût I/O R8).
+
 ---
 
 ## Prérequis VM Linux (root)

@@ -68,16 +68,17 @@ Instructions de test complètes (VM Linux root, VM Windows WDK) : [HANDOFF.md](H
 
 | # | Test | Statut |
 |---|---|---|
-| R1 | Blocage `-EPERM` sur accès canary (Linux) | 🖥️ HANDOFF (VM root) |
-| R2 | Simulateur ransomware → kill + snapshot < 500 ms | ✅ testé (logique) / 🖥️ HANDOFF (bout-en-bout) |
+| R1 | Blocage `-EPERM` sur accès canary (Linux) | ✅ verifier LSM OK (Docker/WSL2) · 🖥️ enforcement HANDOFF (VM `lsm=…,bpf`) |
+| R2 | Simulateur ransomware → kill + snapshot < 500 ms | ✅ détection+snapshot E2E réel + kill/latence unit C (47 ms) · 🖥️ E2E VM native |
 | R3 | Chargement minifilter (VM Win) | 🖥️ HANDOFF (VM WDK) |
 | R4 | RanSim en VM Windows | 🖥️ HANDOFF |
-| R5 | Suppression VSS → alerte prioritaire | ✅ parsing testé / 🖥️ HANDOFF (VM) |
+| R5 | Suppression VSS → alerte prioritaire | ✅ matching testé (C + Python) · 🖥️ driver HANDOFF (VM) |
 | R6 | npm install → zéro faux positif | ✅ testé (simulé) |
 | R7 | OneDrive + git clone → zéro faux positif | ✅ testé (simulé) |
-| R8 | Benchmark latence I/O < 5 % | 🖥️ HANDOFF (VM) |
+| R8 | Benchmark latence I/O < 5 % | 🖥️ HANDOFF (VM, `demo/benchmark_io.sh`) |
 
-Légende : ✅ testé automatiquement · 🖥️ à valider en VM (voir HANDOFF.md).
+Légende : ✅ testé automatiquement · 🖥️ à valider en VM (voir [HANDOFF.md](HANDOFF.md)).
+Preuves d'exécution détaillées : [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ---
 

@@ -45,6 +45,7 @@ static struct {
 	const char *log_path;
 	int         json;
 	int         dry_run;
+	int         quiet;
 	int         verbose;
 	int         enforce;
 } env = {
@@ -82,6 +83,7 @@ struct app_ctx {
 	char                  **canaries;
 	int                     n_canaries;
 	int                     json;
+	int                     quiet;
 };
 
 /* Le chemin est-il sous un dossier protégé ? (scoping de la détection I/O :
@@ -133,6 +135,7 @@ static const struct argp_option opts[] = {
 	{ "log",         'l', "FILE", 0, "Journal des réponses" },
 	{ "json",        'j', NULL,   0, "Émettre les événements en JSON (mode dégradé)" },
 	{ "dry-run",     'd', NULL,   0, "Ne pas tuer/snapshotter réellement (test)" },
+	{ "quiet",       'q', NULL,   0, "N'afficher que les alertes/réponses (pas chaque I/O)" },
 	{ "observe",     'o', NULL,   0, "Observation seule (LSM ne bloque pas)" },
 	{ "verbose",     'v', NULL,   0, "Sortie détaillée (logs libbpf)" },
 	{ 0 },
@@ -157,6 +160,7 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	case 'l': env.log_path = arg; break;
 	case 'j': env.json = 1; break;
 	case 'd': env.dry_run = 1; break;
+	case 'q': env.quiet = 1; break;
 	case 'o': env.enforce = 0; break;
 	case 'v': env.verbose = 1; break;
 	default:  return ARGP_ERR_UNKNOWN;
@@ -380,18 +384,23 @@ static int handle_event(void *ctx, void *data, size_t sz)
 	strftime(ts, sizeof(ts), "%H:%M:%S", &tm);
 
 	if (e->event_type == EVENT_CANARY_HIT || e->event_type == EVENT_BLOCKED) {
+		/* Les alertes sont toujours affichées, même en mode --quiet. */
 		printf("%s \033[31m%s\033[0m pid=%-7u comm=%-16s %s%s\n",
 		       ts, type_str(e->event_type), e->tgid, e->comm,
 		       e->filename[0] ? e->filename : "(cible)",
 		       e->ret ? "  [-EPERM]" : "  [observé]");
 		fflush(stdout);
-	} else if (e->event_type == EVENT_WRITE) {
-		printf("%s %s pid=%-7u comm=%-16s fd=%u bytes=%llu\n",
-		       ts, type_str(e->event_type), e->tgid, e->comm,
-		       e->flags, (unsigned long long)e->ino);
-	} else {
-		printf("%s %s pid=%-7u comm=%-16s %s\n",
-		       ts, type_str(e->event_type), e->tgid, e->comm, e->filename);
+	} else if (!(app && app->quiet)) {
+		/* Trafic I/O ordinaire : masqué en --quiet (évite de noyer les
+		 * alertes et de ralentir le loader sous forte charge système). */
+		if (e->event_type == EVENT_WRITE) {
+			printf("%s %s pid=%-7u comm=%-16s fd=%u bytes=%llu\n",
+			       ts, type_str(e->event_type), e->tgid, e->comm,
+			       e->flags, (unsigned long long)e->ino);
+		} else {
+			printf("%s %s pid=%-7u comm=%-16s %s\n",
+			       ts, type_str(e->event_type), e->tgid, e->comm, e->filename);
+		}
 	}
 
 	/* --- Détection comportementale + réponse (Phase 4) --- */
@@ -511,6 +520,7 @@ int main(int argc, char **argv)
 		.canaries = g_canaries,
 		.n_canaries = g_ncanaries,
 		.json = env.json,
+		.quiet = env.quiet,
 	};
 
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, &app, NULL);
@@ -526,7 +536,11 @@ int main(int argc, char **argv)
 		       env.enforce ? "ENFORCE (blocage -EPERM via LSM BPF)" : "observe",
 		       (!lsm_ok) ? " — LSM bpf indisponible, blocage délégué au responder" : "",
 		       resp.have_rsync ? "oui" : "non (repli cp -a)");
-		printf("%-8s %-6s %-11s %-16s %s\n", "HEURE", "TYPE", "PID", "COMM", "CIBLE");
+		if (!env.quiet)
+			printf("%-8s %-6s %-11s %-16s %s\n",
+			       "HEURE", "TYPE", "PID", "COMM", "CIBLE");
+		else
+			printf("(mode --quiet : seules les alertes et réponses sont affichées)\n");
 	}
 
 	while (!exiting) {
