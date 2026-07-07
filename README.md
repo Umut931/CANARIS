@@ -39,7 +39,7 @@ assumées : [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 | **2. Interception noyau** | Blocage réel des I/O malveillantes (Ring 0) | eBPF kprobes (observation) + **LSM BPF** (blocage `-EPERM`) | Minifilter (`STATUS_ACCESS_DENIED`) |
 | **3. Réaction de préservation** | Kill du processus + snapshot instantané | `rsync --link-dest` | VSS via IOCTL |
 
-> ⚠️ **Pas de chiffrement préventif.** Décision d'architecture non négociable (voir [CLAUDE.md §2.1](CLAUDE.md)). La seule réponse de préservation est le **snapshot**.
+> ⚠️ **Pas de chiffrement préventif.
 
 ---
 
